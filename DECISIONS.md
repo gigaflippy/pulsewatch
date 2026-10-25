@@ -70,7 +70,7 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 
 ## D-003 — Alert routing: Telegram, email, or both (roadmap item 7)? (opened 2026-10-21)
 
-**Status:** open. Nightly runs skip anything that needs a token or a mail account until this is answered.
+**Status:** resolved: Option 3 + Telegram (2026-10-21)
 
 **Context.** Item 7 adds Alertmanager to route the existing alerts (`TargetDown` = page, `TargetDownInSomeRegions` / `TargetSlow` = warn) to a real channel. Every real channel needs a credential that only you can create. It must never be committed: it would live in a git-ignored `.env` for compose and in a Kubernetes Secret you create locally. Both options below are free.
 
@@ -89,4 +89,4 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 
 **Recommendation:** Option 3 with Telegram as the real channel (Option 1). Answer "3 + Telegram" (or "3 + email") and the next run builds it. You create the bot token yourself whenever you like. No run will ever ask for or store it.
 
-**Georgi's answer:**
+**Georgi's answer:** 3 + Telegram (2026-10-21). Build the credential-free Alertmanager now (routing, inhibition, CI-tested against a webhook sink). Telegram is the real channel, switched on only when Georgi creates a local Secret himself. No run asks for or stores the token.
