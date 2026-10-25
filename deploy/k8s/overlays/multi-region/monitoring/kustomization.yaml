@@ -4,3 +4,8 @@ namespace: pulsewatch
 resources:
   - namespace.yaml
   - ../../../monitoring
+images:
+  # The alert sink runs from the Pulsewatch image, side-loaded like the probe agents.
+  - name: pulsewatch
+    newName: pulsewatch
+    newTag: dev

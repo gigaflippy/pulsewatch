@@ -1,0 +1,7 @@
+{{/* Telegram message (parse_mode HTML). Target names are [a-zA-Z0-9_.-], so no escaping is needed. */}}
+{{ define "pulsewatch.telegram" -}}
+{{ if eq .Status "firing" }}🔴{{ else }}✅{{ end }} <b>{{ .Status | toUpper }}</b> [{{ .CommonLabels.severity }}] {{ .CommonLabels.alertname }}{{ if .CommonLabels.target }} · <code>{{ .CommonLabels.target }}</code>{{ end }}
+{{ range .Alerts -}}
+• {{ .Annotations.summary }}
+{{ end -}}
+{{- end }}

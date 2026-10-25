@@ -1,3 +1,5 @@
+# All ports are published on 127.0.0.1 only. Alertmanager, Prometheus and the alert sink
+# have no authentication, so they must not be reachable from the local network.
 services:
   pulsewatch:
     build: .
@@ -8,27 +10,55 @@ services:
       - ${PULSEWATCH_TARGETS:-./targets.example.yaml}:/config/targets.yaml:ro
       - pulsewatch-data:/data
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:v2.54.1
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.time=8d
     volumes:
       - ./deploy/prometheus:/etc/prometheus:ro
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     depends_on:
       - pulsewatch
+      - alertmanager
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    # start.sh adds Telegram only when both variables are set (in a git-ignored .env).
+    entrypoint: ["/bin/sh", "/etc/alertmanager/start.sh"]
+    command: ["--storage.path=/alertmanager", "--cluster.listen-address="]
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - ./deploy/alertmanager:/etc/alertmanager:ro
+    ports:
+      - "127.0.0.1:9093:9093"
+    depends_on:
+      - alert-sink
+    restart: unless-stopped
+
+  # Local inbox for every alert notification: GET http://localhost:9095/notifications
+  alert-sink:
+    build: .
+    entrypoint: ["pulsewatch-alertsink"]
+    ports:
+      - "127.0.0.1:9095:9095"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9095/healthz', timeout=2)"]
     restart: unless-stopped
 
   grafana:
     image: grafana/grafana-oss:11.2.2
     environment:
       # Local-only defaults: anonymous read-only viewing, admin/admin for editing.
-      # Override GRAFANA_ADMIN_PASSWORD if the port is reachable from other machines.
+      # Every port is published on 127.0.0.1 only, so other machines cannot reach these.
+      # Override GRAFANA_ADMIN_PASSWORD if you publish the port more widely.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
@@ -41,7 +71,7 @@ services:
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - prometheus
     restart: unless-stopped

@@ -1,0 +1,67 @@
+# alertmanager.yml plus Telegram on the page and warn receivers. Used only when start.sh
+# finds TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID; it fills in the placeholders below at
+# container start. The token itself never appears in any config file (bot_token_file),
+# and none of this is ever committed with real values.
+# tests/test_alertmanager.py fails if this drifts from alertmanager.yml.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default
+  # One notification per alert per target; regions of the same target are batched.
+  group_by: [alertname, target]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - receiver: page
+      matchers: ['severity="page"']
+      group_wait: 10s
+      repeat_interval: 1h
+    - receiver: warn
+      matchers: ['severity="warn"']
+      repeat_interval: 12h
+
+inhibit_rules:
+  # Down from every region already pages. The per-region, latency and error-budget
+  # warnings for the same target add nothing while that is firing, so they are held back.
+  - source_matchers: ['alertname="TargetDown"']
+    target_matchers: ['alertname=~"TargetDownInSomeRegions|TargetSlow|ErrorBudgetBurnSlow"']
+    equal: [target]
+  # Same budget, same target: the fast-burn page makes the slow-burn warning redundant.
+  - source_matchers: ['alertname="ErrorBudgetBurnFast"']
+    target_matchers: ['alertname="ErrorBudgetBurnSlow"']
+    equal: [target]
+  # No agent reports at all: the per-region "stopped reporting" warnings are the same
+  # incident. No `equal`, because ProbeAgentsAbsent has no region or target label.
+  - source_matchers: ['alertname="ProbeAgentsAbsent"']
+    target_matchers: ['alertname="ProbeRegionMissing"']
+
+receivers:
+  - name: default
+    webhook_configs:
+      - url: http://alert-sink:9095/default
+        send_resolved: true
+  - name: page
+    webhook_configs:
+      - url: http://alert-sink:9095/page
+        send_resolved: true
+    telegram_configs:
+      - bot_token_file: __TELEGRAM_BOT_TOKEN_FILE__
+        chat_id: __TELEGRAM_CHAT_ID__
+        send_resolved: true
+        parse_mode: HTML
+        message: '{{ template "pulsewatch.telegram" . }}'
+  - name: warn
+    webhook_configs:
+      - url: http://alert-sink:9095/warn
+        send_resolved: true
+    telegram_configs:
+      - bot_token_file: __TELEGRAM_BOT_TOKEN_FILE__
+        chat_id: __TELEGRAM_CHAT_ID__
+        send_resolved: true
+        parse_mode: HTML
+        message: '{{ template "pulsewatch.telegram" . }}'
+
+templates:
+  - __CONF_DIR__/telegram.tmpl

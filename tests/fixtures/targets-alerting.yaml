@@ -1,0 +1,11 @@
+# CI only (stack job): one healthy target and one that is always down, so TargetDown
+# fires for real and travels probe -> Prometheus rule -> Alertmanager -> alert sink.
+targets:
+  - name: example
+    url: https://example.com
+    interval_seconds: 30
+    timeout_seconds: 5
+  - name: blackhole
+    url: http://127.0.0.1:1/
+    interval_seconds: 5
+    timeout_seconds: 1

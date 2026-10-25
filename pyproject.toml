@@ -27,6 +27,7 @@ dev = [
 
 [project.scripts]
 pulsewatch = "pulsewatch.main:run"
+pulsewatch-alertsink = "pulsewatch.alertsink:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pulsewatch"]

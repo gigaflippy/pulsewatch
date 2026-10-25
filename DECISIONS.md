@@ -2,6 +2,8 @@
 
 Open questions from nightly runs. Answer under **Georgi's answer** (one line is enough) and the next run acts on it first.
 
+> Note (2026-10-24): the repository was renamed from `Firstproject` to `pulsewatch`. D-001 below keeps the old name because it records what was true when it was written.
+
 ---
 
 ## D-001 — What should nightly runs work on? (opened 2026-10-19)
@@ -70,7 +72,7 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 
 ## D-003 — Alert routing: Telegram, email, or both (roadmap item 7)? (opened 2026-10-21)
 
-**Status:** resolved: Option 3 + Telegram (2026-10-21)
+**Status:** resolved: Option 3 + Telegram (2026-10-21). Built on `nightly/2026-10-22-alertmanager`: Alertmanager routing + inhibition, local alert sink, Telegram switched on by `make alerts-telegram` / `.env`.
 
 **Context.** Item 7 adds Alertmanager to route the existing alerts (`TargetDown` = page, `TargetDownInSomeRegions` / `TargetSlow` = warn) to a real channel. Every real channel needs a credential that only you can create. It must never be committed: it would live in a git-ignored `.env` for compose and in a Kubernetes Secret you create locally. Both options below are free.
 
@@ -90,3 +92,27 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 **Recommendation:** Option 3 with Telegram as the real channel (Option 1). Answer "3 + Telegram" (or "3 + email") and the next run builds it. You create the bot token yourself whenever you like. No run will ever ask for or store it.
 
 **Georgi's answer:** 3 + Telegram (2026-10-21). Build the credential-free Alertmanager now (routing, inhibition, CI-tested against a webhook sink). Telegram is the real channel, switched on only when Georgi creates a local Secret himself. No run asks for or stores the token.
+
+---
+
+## D-004 — Which licence for the repository? (opened 2026-10-24)
+
+**Status:** open, waiting on Georgi. Nothing else waits on this.
+
+**Context.** The repository has no `LICENSE` file. On GitHub, that means "all rights reserved": people can read the code but are not allowed to copy, change or reuse it. For a portfolio project that is legal and fine, but visitors and recruiters often read a missing licence as "unfinished". Choosing a licence is a legal choice about your work, so it is yours. All options below are free.
+
+**Options.**
+
+1. **MIT (recommended).**
+   - + The most common licence on GitHub. Short and easy to understand. Anyone can reuse the code if they keep your copyright line.
+   - − No patent clause. That does not matter for this project.
+2. **Apache-2.0.**
+   - + Same freedoms as MIT, plus an explicit patent grant. Common in the Kubernetes and CNCF world.
+   - − Longer text. It asks people who change files to mark their changes.
+3. **No licence (keep as is).**
+   - + Nobody may reuse the code without asking you.
+   - − Looks unfinished to many visitors, and nobody can legally fork it to try it.
+
+**Recommendation:** MIT, copyright "Georgi Georgiev". Answer with one word (MIT, Apache-2.0 or none) and the next run adds the file.
+
+**Georgi's answer:**

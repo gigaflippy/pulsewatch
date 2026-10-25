@@ -132,3 +132,13 @@ def test_image_is_side_loaded_not_pulled():
     make = MAKEFILE.read_text()
     up = make[make.index("argocd-up:") :]
     assert up.index("kind load docker-image") < up.index("argocd-bootstrap")
+
+
+def test_argocd_redis_uses_the_side_loaded_image():
+    # public.ecr.aws rate-limits; with upstream's imagePullPolicy: Always the kubelet
+    # re-checks the registry even though CI side-loads the image, and redis never starts.
+    k = yaml.safe_load((ARGOCD / "install" / "kustomization.yaml").read_text())
+    patches = [yaml.safe_load(p["patch"]) for p in k["patches"]]
+    [redis] = [p for p in patches if p["metadata"]["name"] == "argocd-redis"]
+    [c] = redis["spec"]["template"]["spec"]["containers"]
+    assert c == {"name": "redis", "imagePullPolicy": "IfNotPresent"}

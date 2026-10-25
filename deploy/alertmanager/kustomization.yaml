@@ -1,0 +1,11 @@
+# Turns the shared Alertmanager files into the in-cluster ConfigMap (see deploy/k8s/monitoring).
+# Same files docker compose mounts; the name carries a content hash, so edits roll the pod.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+  - name: alertmanager-config
+    files:
+      - alertmanager.yml
+      - alertmanager-telegram.yml
+      - telegram.tmpl
+      - start.sh

@@ -27,6 +27,7 @@ COMPOSE = ROOT / "docker-compose.yml"
 PROMQL_WORDS = {
     "sum",
     "count",
+    "group",
     "avg",
     "min",
     "max",
@@ -45,14 +46,18 @@ PROMQL_WORDS = {
     "avg_over_time",
     "max_over_time",
     "min_over_time",
+    "absent",
     "label_values",
     "le",
     "target",
     "region",
     "result",
+    "integration",
 }
 # Series Prometheus itself creates.
 BUILTIN_SERIES = {"ALERTS", "ALERTS_FOR_STATE", "up"}
+# Series scraped from Alertmanager (job "alertmanager"), used by the delivery alert.
+ALERTMANAGER_SERIES = {"alertmanager_notifications_failed_total"}
 
 
 def _exported_metric_names() -> set[str]:
@@ -134,7 +139,13 @@ def test_recording_rules_use_known_metrics():
     recorded = _recording_rule_names()
     for group in data["groups"]:
         for rule in group["rules"]:
-            unknown = _metric_names_in(rule["expr"]) - known - recorded
+            unknown = (
+                _metric_names_in(rule["expr"])
+                - known
+                - recorded
+                - ALERTMANAGER_SERIES
+                - BUILTIN_SERIES
+            )
             assert not unknown, f"{rule!r} references unknown series {sorted(unknown)}"
 
 

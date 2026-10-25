@@ -4,6 +4,14 @@ variable "cluster_name" {
   default     = "pulsewatch"
 }
 
+# kind v0.31.0's default node. Left to the provider's default, the node moved to one whose
+# containerd config (version 4) `kind load` from kind <= v0.31 cannot read.
+variable "node_image" {
+  description = "kind node image. Pinned so the cluster matches the kind CLI used by `kind load`."
+  type        = string
+  default     = "kindest/node:v1.35.0"
+}
+
 variable "overlay" {
   description = "Kustomize overlay under deploy/k8s/overlays to deploy."
   type        = string

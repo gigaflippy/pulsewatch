@@ -1,5 +1,5 @@
-# Prometheus + Grafana, configured from the same files as docker compose.
-# Service names (prometheus, grafana) match compose so the configs work unchanged.
+# Prometheus, Alertmanager (+ alert sink) and Grafana, configured from the same files as docker compose.
+# Service names (prometheus, alertmanager, alert-sink, grafana) match compose so the configs work unchanged.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -11,6 +11,9 @@ labels:
 resources:
   - ../../prometheus
   - ../../grafana
+  - ../../alertmanager
   - prometheus-rbac.yaml
   - prometheus.yaml
+  - alertmanager.yaml
+  - alert-sink.yaml
   - grafana.yaml

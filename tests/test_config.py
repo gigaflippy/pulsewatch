@@ -33,8 +33,16 @@ def test_duplicate_names_rejected():
         {"name": "a", "url": "not-a-url"},
         {"name": "a", "url": "https://a.test", "interval_seconds": 0.5},
         {"name": "a", "url": "https://a.test", "method": "POST"},
+        {"name": "a", "url": "https://a.test", "slo_objective": 1},
+        {"name": "a", "url": "https://a.test", "slo_objective": 99.5},
+        {"name": "a", "url": "https://a.test", "slo_objective": 0},
     ],
 )
 def test_invalid_targets(bad):
     with pytest.raises(ValidationError):
         Target.model_validate(bad)
+
+
+def test_slo_objective_default_and_override():
+    assert Target(name="a", url="https://a.test").slo_objective == 0.995
+    assert Target(name="a", url="https://a.test", slo_objective=0.99).slo_objective == 0.99

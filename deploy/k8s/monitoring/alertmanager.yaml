@@ -1,0 +1,110 @@
+# Alertmanager: routes Prometheus alerts (page / warn) to the alert sink and, once you
+# create the optional Secret "alertmanager-telegram" (make alerts-telegram), to Telegram.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  labels:
+    app.kubernetes.io/name: alertmanager
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alertmanager
+    spec:
+      automountServiceAccountToken: false
+      # No Docker-link style env vars: the "pulsewatch" Service would inject
+      # PULSEWATCH_PORT=tcp://... and collide with the app's PULSEWATCH_* settings.
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: alertmanager
+          image: prom/alertmanager:v0.27.0
+          command: ["/bin/sh", "/etc/alertmanager/start.sh"]
+          args:
+            - --storage.path=/alertmanager
+            - --cluster.listen-address=   # single replica: no HA gossip
+          env:
+            # Optional: without the Secret these are unset and start.sh uses the
+            # credential-free config. The Secret is created locally, never committed.
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: alertmanager-telegram
+                  key: bot_token
+                  optional: true
+            - name: TELEGRAM_CHAT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: alertmanager-telegram
+                  key: chat_id
+                  optional: true
+          ports:
+            - name: http
+              containerPort: 9093
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alertmanager
+              readOnly: true
+            - name: data
+              mountPath: /alertmanager
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: config
+          configMap:
+            name: alertmanager-config
+        # Silences and notification log reset with the pod; fine for a local stack.
+        - name: data
+          emptyDir: {}
+        # Rendered Telegram config and token file (0600), memory-backed.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  labels:
+    app.kubernetes.io/name: alertmanager
+spec:
+  selector:
+    app.kubernetes.io/name: alertmanager
+  ports:
+    - name: http
+      port: 9093
+      targetPort: http

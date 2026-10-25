@@ -98,7 +98,9 @@ def test_single_writer_for_sqlite():
     assert spec["strategy"]["type"] == "Recreate"
 
 
-@pytest.mark.parametrize("name", ["pulsewatch", "prometheus", "grafana"])
+@pytest.mark.parametrize(
+    "name", ["pulsewatch", "prometheus", "grafana", "alertmanager", "alert-sink"]
+)
 def test_containers_are_hardened(name):
     dep = _find("Deployment", name)
     pod = dep["spec"]["template"]["spec"]
@@ -131,15 +133,29 @@ def test_services_match_shared_config_hostnames():
 
 def test_images_pinned_like_compose():
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"]
-    for name in ("prometheus", "grafana"):
+    for name in ("prometheus", "grafana", "alertmanager"):
         assert _container(_find("Deployment", name))["image"] == compose[name]["image"]
 
 
 def test_overlay_pins_local_image():
     k = yaml.safe_load((OVERLAY / "kustomization.yaml").read_text())
     [img] = k["images"]
-    assert img["name"] == _container(_find("Deployment", "pulsewatch"))["image"]
-    assert _container(_find("Deployment", "pulsewatch"))["imagePullPolicy"] == "IfNotPresent"
+    # The alert sink runs from the same locally built image as the probe agents.
+    for name in ("pulsewatch", "alert-sink"):
+        assert img["name"] == _container(_find("Deployment", name))["image"]
+        assert _container(_find("Deployment", name))["imagePullPolicy"] == "IfNotPresent"
+    multi = yaml.safe_load((MULTI / "monitoring" / "kustomization.yaml").read_text())
+    assert multi["images"] == k["images"]
+
+
+def test_alert_sink_runs_as_dockerfile_user_and_entry_point():
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    pyproject = (ROOT / "pyproject.toml").read_text()
+    dep = _find("Deployment", "alert-sink")
+    pod = dep["spec"]["template"]["spec"]
+    assert f"--uid {pod['securityContext']['runAsUser']}" in dockerfile
+    [cmd] = _container(dep)["command"]
+    assert f'{cmd} = "pulsewatch.alertsink:run"' in pyproject
 
 
 @pytest.mark.skipif(
@@ -150,7 +166,7 @@ def test_overlay_renders():
     out = subprocess.run([*cmd, str(OVERLAY)], check=True, capture_output=True, text=True).stdout
     docs = [d for d in yaml.safe_load_all(out) if d]
     workloads = {d["metadata"]["name"] for d in docs if d["kind"] == "Deployment"}
-    assert workloads == {"pulsewatch", "prometheus", "grafana"}
+    assert workloads == {"pulsewatch", "prometheus", "grafana", "alertmanager", "alert-sink"}
     assert all(
         d["metadata"].get("namespace") == "pulsewatch"
         for d in docs

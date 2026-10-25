@@ -8,6 +8,7 @@ targets:
     url: https://api.github.com
     interval_seconds: 60
     expected_status: [200]
+    slo_objective: 0.99           # optional, default 0.995 (fraction of the last 7d up)
   - name: cloudflare-dns
     url: https://1.1.1.1
     method: HEAD

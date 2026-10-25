@@ -5,7 +5,18 @@ global:
 rule_files:
   - /etc/prometheus/rules.yml
 
+# Alertmanager runs next to Prometheus in both runtimes (compose service / k8s Service).
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
 scrape_configs:
   - job_name: pulsewatch
     static_configs:
       - targets: ["pulsewatch:8000"]
+
+  # Alertmanager's own metrics: AlertmanagerNotificationsFailing watches delivery.
+  - job_name: alertmanager
+    static_configs:
+      - targets: ["alertmanager:9093"]

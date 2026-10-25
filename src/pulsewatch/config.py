@@ -18,6 +18,9 @@ class Target(BaseModel):
     timeout_seconds: float = Field(default=5.0, gt=0.0)
     expected_status: list[int] = Field(default_factory=lambda: [200])
     method: str = "GET"
+    # Availability objective for this target: the fraction of time it must be up from at
+    # least one region, over Prometheus' 7-day SLO window. 0.995 = ~50 min of budget a week.
+    slo_objective: float = Field(default=0.995, gt=0.0, lt=1.0)
 
     @field_validator("method")
     @classmethod

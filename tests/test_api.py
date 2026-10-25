@@ -50,5 +50,17 @@ def test_metrics_exposed(client):
     assert "pulsewatch_probe_latency_seconds_bucket" in body
 
 
+def test_metrics_before_any_probe(client):
+    """Objectives are exported and counters start at zero, so the SLO rules have data."""
+    body = client.get("/metrics").text
+    for name in ("good", "bad", "slow"):
+        assert f'pulsewatch_slo_objective{{region="eu-test",target="{name}"}} 0.995' in body
+        for result in ("up", "down"):
+            line = f'pulsewatch_probes_total{{region="eu-test",result="{result}",target="{name}"}}'
+            assert f"{line} 0.0" in body
+    # The up gauge stays absent until a probe has run: no fake "down" before the first check.
+    assert "pulsewatch_up{" not in body
+
+
 def test_status_window_validation(client):
     assert client.get("/status?window=10").status_code == 422

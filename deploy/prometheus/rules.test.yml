@@ -72,3 +72,231 @@ tests:
         exp_samples:
           - labels: 'pulsewatch:uptime_ratio_1h{target="api", region="eu"}'
             value: 0.5
+
+  - name: failing notification delivery warns
+    interval: 1m
+    input_series:
+      - series: 'alertmanager_notifications_failed_total{integration="telegram", instance="am"}'
+        values: '0x5 1+1x20'
+      - series: 'alertmanager_notifications_failed_total{integration="webhook", instance="am"}'
+        values: '0x26'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AlertmanagerNotificationsFailing
+        exp_alerts: []   # failing since ~5m, needs 10m
+      - eval_time: 20m
+        alertname: AlertmanagerNotificationsFailing
+        exp_alerts:
+          - exp_labels: { severity: warn, integration: telegram }
+            exp_annotations: { summary: "Alertmanager is failing to deliver telegram notifications" }
+
+  # --- SLO / error budget -------------------------------------------------------------
+  # Objective 0.995 everywhere below: fast burn threshold 7.2% errors, slow 3% (6h) / 0.5% (3d).
+
+  - name: flapping target never fires TargetDown but burns budget fast
+    interval: 15s
+    input_series:
+      - series: 'pulsewatch_slo_objective{target="api", region="eu"}'
+        values: '0.995x320'
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1 0 0 1 1'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: TargetDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: ErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels: { severity: page, target: api }
+            exp_annotations: { summary: "api is burning its 7d error budget 14x too fast (1h)" }
+
+  - name: hard outage pages once, as TargetDown, also after recovery
+    interval: 15s
+    input_series:
+      - series: 'pulsewatch_slo_objective{target="api", region="eu"}'
+        values: '0.995x200'
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '1x3 0x59 1x136'   # down from 1m to 16m
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels: { severity: page, target: api }
+            exp_annotations: { summary: "api is down from every region" }
+      - eval_time: 10m
+        alertname: ErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 19m   # recovered 3m ago: the 5m window is still above threshold
+        alertname: ErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: ErrorBudgetBurnFast
+        exp_alerts: []
+
+  - name: one bad region burns no budget
+    interval: 15s
+    input_series:
+      - series: 'pulsewatch_slo_objective{target="api", region="eu"}'
+        values: '0.995x120'
+      - series: 'pulsewatch_slo_objective{target="api", region="us"}'
+        values: '0.995x120'
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '0x120'
+      - series: 'pulsewatch_up{target="api", region="us"}'
+        values: '1x120'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: ErrorBudgetBurnSlow
+        exp_alerts: []
+    promql_expr_test:
+      - expr: pulsewatch:slo_error_budget_remaining:7d
+        eval_time: 25m
+        exp_samples:
+          - labels: 'pulsewatch:slo_error_budget_remaining:7d{target="api"}'
+            value: 1
+
+  - name: steady 5% failures warn as slow burn, not a page
+    interval: 1m
+    input_series:
+      - series: 'pulsewatch_slo_objective{target="api", region="eu"}'
+        values: '0.995x480'
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0 1x18 0'
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: ErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: ErrorBudgetBurnSlow
+        exp_alerts:
+          - exp_labels: { severity: warn, target: api }
+            exp_annotations: { summary: "api will run out of its 7d error budget at this rate" }
+
+  - name: objective comes from targets.yaml, per target
+    interval: 1m
+    input_series:
+      - series: 'pulsewatch_slo_objective{target="api", region="eu"}'
+        values: '0.99x60'
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '1x59 0'   # up for the hour, down at the last sample
+    promql_expr_test:
+      - expr: pulsewatch:slo_objective
+        eval_time: 30m
+        exp_samples:
+          - labels: 'pulsewatch:slo_objective{target="api"}'
+            value: 0.99
+      - expr: pulsewatch:slo_burn_rate:1h
+        eval_time: 30m
+        exp_samples:
+          - labels: 'pulsewatch:slo_burn_rate:1h{target="api"}'
+            value: 0
+
+  - name: target down from the very first probe still pages only as TargetDown
+    interval: 15s
+    input_series:
+      - series: 'pulsewatch_slo_objective{target="api", region="eu"}'
+        values: '0.995x80'
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels: { severity: page, target: api }
+            exp_annotations: { summary: "api is down from every region" }
+      - eval_time: 10m
+        alertname: ErrorBudgetBurnFast
+        exp_alerts: []
+
+  # Meta-monitoring: lost probe agents (chaos-tested on kind in CI, the `chaos` job).
+  - name: one region stops reporting, the other keeps the consensus
+    interval: 15s
+    input_series:
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '1x300'
+      # us agent dies after 5m (scaled to zero / unscrapable: its series go stale)
+      - series: 'pulsewatch_up{target="api", region="us"}'
+        values: '1x20 stale'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ProbeRegionMissing
+        exp_alerts: []   # not yet: needs 5m
+      - eval_time: 11m
+        alertname: ProbeRegionMissing
+        exp_alerts:
+          - exp_labels: { severity: warn, region: us }
+            exp_annotations:
+              summary: "Probe region us stopped reporting; alerts rely on the remaining regions"
+      - eval_time: 11m
+        alertname: TargetDown
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: TargetDownInSomeRegions
+        exp_alerts: []   # a missing region is not a down region
+      - eval_time: 11m
+        alertname: ProbeAgentsAbsent
+        exp_alerts: []
+      # gone for over an hour: treated as decommissioned
+      - eval_time: 70m
+        alertname: ProbeRegionMissing
+        exp_alerts: []
+
+  - name: every agent gone pages, because TargetDown can no longer fire
+    interval: 15s
+    input_series:
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '1x20 stale'
+      - series: 'pulsewatch_up{target="api", region="us"}'
+        values: '1x20 stale'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: ProbeAgentsAbsent
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: ProbeAgentsAbsent
+        exp_alerts:
+          - exp_labels: { severity: page }
+            exp_annotations: { summary: "No Pulsewatch probe agent is reporting; uptime alerting is blind" }
+      # also firing, but Alertmanager inhibits these behind ProbeAgentsAbsent
+      - eval_time: 11m
+        alertname: ProbeRegionMissing
+        exp_alerts:
+          - exp_labels: { severity: warn, region: eu }
+            exp_annotations:
+              summary: "Probe region eu stopped reporting; alerts rely on the remaining regions"
+          - exp_labels: { severity: warn, region: us }
+            exp_annotations:
+              summary: "Probe region us stopped reporting; alerts rely on the remaining regions"
+      - eval_time: 11m
+        alertname: TargetDown
+        exp_alerts: []
+
+  - name: agents that never came up page too
+    interval: 15s
+    input_series:
+      - series: 'up{job="pulsewatch"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ProbeAgentsAbsent
+        exp_alerts:
+          - exp_labels: { severity: page }
+            exp_annotations: { summary: "No Pulsewatch probe agent is reporting; uptime alerting is blind" }
+
+  - name: a pod restart (2m without series) does not warn
+    interval: 15s
+    input_series:
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '1x80'
+      - series: 'pulsewatch_up{target="api", region="us"}'
+        values: '1x20 stale _x7 1x50'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ProbeRegionMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: ProbeRegionMissing
+        exp_alerts: []

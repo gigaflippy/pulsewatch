@@ -11,9 +11,10 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - run: pip install ruff
@@ -22,12 +23,13 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -36,9 +38,10 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: docker build -t pulsewatch:ci .
       - name: Smoke test
         run: |
@@ -49,11 +52,16 @@ jobs:
           docker logs pw; exit 1
 
   stack:
-    # Brings up the full compose stack and checks Prometheus and Grafana are wired together.
+    # Brings up the full compose stack: Prometheus scrapes Pulsewatch, Grafana is provisioned,
+    # and alerts travel probe -> rule -> Alertmanager -> alert sink with routing and inhibition.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: test
+    env:
+      # One target that is always down, so TargetDown fires for real (see the fixture).
+      PULSEWATCH_TARGETS: ./tests/fixtures/targets-alerting.yaml
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: promtool check + rule unit tests
         run: |
           promtool() { docker run --rm --entrypoint promtool -w /etc/prometheus \
@@ -61,15 +69,35 @@ jobs:
           promtool check config /etc/prometheus/prometheus.yml
           promtool check config /etc/prometheus/prometheus-k8s.yml
           promtool test rules rules.test.yml
-      - run: docker compose up -d --build
-      - name: Prometheus scrapes Pulsewatch
+      - name: amtool check-config + routing tree
         run: |
+          amtool() { docker run --rm --entrypoint amtool \
+            -v "$PWD/deploy/alertmanager:/etc/alertmanager:ro" prom/alertmanager:v0.27.0 "$@"; }
+          amtool check-config /etc/alertmanager/alertmanager.yml
+          routes() { amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml "$@"; }
+          routes --verify.receivers=page  alertname=TargetDown severity=page target=api
+          routes --verify.receivers=warn  alertname=TargetSlow severity=warn target=api
+          routes --verify.receivers=warn  alertname=TargetDownInSomeRegions severity=warn target=api
+          routes --verify.receivers=page  alertname=ErrorBudgetBurnFast severity=page target=api
+          routes --verify.receivers=warn  alertname=ErrorBudgetBurnSlow severity=warn target=api
+          routes --verify.receivers=warn  alertname=ProbeRegionMissing severity=warn region=us-sim
+          routes --verify.receivers=page  alertname=ProbeAgentsAbsent severity=page
+          routes --verify.receivers=default alertname=Unlabelled
+          # The Telegram variant, rendered by start.sh exactly as at runtime (fake values).
+          docker run --rm --entrypoint /bin/sh -e TELEGRAM_BOT_TOKEN=123456:ci-fake-token \
+            -e TELEGRAM_CHAT_ID=-100123 -e ALERTMANAGER_CHECK_ONLY=1 \
+            -v "$PWD/deploy/alertmanager:/etc/alertmanager:ro" prom/alertmanager:v0.27.0 /etc/alertmanager/start.sh
+      - run: docker compose up -d --build
+      - name: Prometheus scrapes Pulsewatch and Alertmanager
+        run: |
+          q() { curl -fsG localhost:9090/api/v1/query --data-urlencode "query=$1"; }
           for i in $(seq 1 30); do
-            curl -fs 'localhost:9090/api/v1/query?query=up%7Bjob%3D%22pulsewatch%22%7D' \
-              | grep -q '"value":\[[0-9.]*,"1"\]' && exit 0
+            q 'up{job="pulsewatch"}' | grep -q '"value":\[[0-9.]*,"1"\]' &&
+              q 'up{job="alertmanager"}' | grep -q '"value":\[[0-9.]*,"1"\]' &&
+              curl -fs localhost:9090/api/v1/alertmanagers | grep -q 'alertmanager:9093' && exit 0
             sleep 2
           done
-          exit 1
+          q 'up'; curl -fs localhost:9090/api/v1/alertmanagers; exit 1
       - name: Grafana serves the provisioned dashboard and datasource
         run: |
           for i in $(seq 1 30); do
@@ -78,17 +106,83 @@ jobs:
           curl -fs localhost:3000/api/dashboards/uid/pulsewatch-overview | grep -q '"title":"Pulsewatch overview"'
           curl -fs -u admin:admin localhost:3000/api/datasources/uid/pulsewatch-prometheus/health \
             | grep -q '"status":"OK"'
-      - name: Logs on failure
+      - name: Inhibition holds back warnings for a target that is down everywhere
+        run: |
+          add() { docker compose exec -T alertmanager amtool --alertmanager.url=http://localhost:9093 alert add "$@"; }
+          add TargetDown severity=page target=ci-inhibited --annotation='summary="ci"'
+          add TargetSlow severity=warn target=ci-inhibited region=eu --annotation='summary="ci"'
+          add TargetSlow severity=warn target=ci-other region=eu --annotation='summary="ci"'
+          add ErrorBudgetBurnSlow severity=warn target=ci-inhibited --annotation='summary="ci"'
+          # Fast burn (page) holds back slow burn (warn) for the same target.
+          add ErrorBudgetBurnFast severity=page target=ci-burn --annotation='summary="ci"'
+          add ErrorBudgetBurnSlow severity=warn target=ci-burn --annotation='summary="ci"'
+          # No agents at all holds back the per-region "stopped reporting" warnings.
+          add ProbeAgentsAbsent severity=page --annotation='summary="ci"'
+          add ProbeRegionMissing severity=warn region=ci-region --annotation='summary="ci"'
+          seen() { curl -fs localhost:9095/notifications | python3 -c '
+          import json, sys
+          want = tuple(sys.argv[1:])
+          got = {(n["receiver"], a["labels"]["alertname"], a["labels"].get("target", "-"))
+                 for n in json.load(sys.stdin) for a in n["payload"]["alerts"]}
+          sys.exit(0 if want in got else 1)' "$@"; }
+          for i in $(seq 1 30); do
+            seen page TargetDown ci-inhibited && seen warn TargetSlow ci-other &&
+              seen page ErrorBudgetBurnFast ci-burn && seen page ProbeAgentsAbsent - && break
+            sleep 3
+          done
+          seen page TargetDown ci-inhibited && seen warn TargetSlow ci-other && seen page ErrorBudgetBurnFast ci-burn
+          seen page ProbeAgentsAbsent -
+          # warn group_wait is 30s and all warnings arrived together: the inhibited ones must be absent.
+          sleep 10
+          for held in "TargetSlow ci-inhibited" "ErrorBudgetBurnSlow ci-inhibited" "ErrorBudgetBurnSlow ci-burn" "ProbeRegionMissing -"; do
+            if seen warn $held; then echo "::error title=inhibition::$held was delivered"; exit 1; fi
+          done
+      - name: A real outage pages end to end (probe -> rule -> Alertmanager -> sink)
+        run: |
+          # TargetDown needs 2m of down probes, then page group_wait (10s).
+          for i in $(seq 1 60); do
+            curl -fs 'localhost:9095/notifications?receiver=page' | python3 -c '
+          import json, sys
+          hits = [a for n in json.load(sys.stdin) for a in n["payload"]["alerts"]
+                  if a["labels"].get("alertname") == "TargetDown" and a["labels"].get("target") == "blackhole"]
+          print(hits[:1]); sys.exit(0 if hits else 1)' && exit 0
+            sleep 5
+          done
+          curl -fsG localhost:9090/api/v1/query --data-urlencode 'query=ALERTS'; exit 1
+      - name: Error budget is spent by the outage and fast burn stays quiet
+        run: |
+          val() { curl -fsG localhost:9090/api/v1/query --data-urlencode "query=$1" |
+            python3 -c 'import json,sys; r=json.load(sys.stdin)["data"]["result"]; print(r[0]["value"][1] if r else "none")'; }
+          for i in $(seq 1 30); do
+            spent=$(val 'pulsewatch:slo_error_budget_remaining:7d{target="blackhole"}')
+            objective=$(val 'pulsewatch:slo_objective{target="example"}')
+            [ "$spent" != none ] && [ "$objective" != none ] && break
+            sleep 2
+          done
+          echo "budget left: blackhole=$spent; objective example=$objective"
+          python3 -c 'import sys; s, o = map(float, sys.argv[1:]); sys.exit(0 if s < 0 and o == 0.995 else 1)' "$spent" "$objective" ||
+            { echo "::error title=slo::budget left blackhole=$spent (want <0), objective example=$objective (want 0.995)"; exit 1; }
+          # The outage already pages as TargetDown; a second page for the same outage is noise.
+          burn=$(val 'ALERTS{alertname="ErrorBudgetBurnFast", target="blackhole", alertstate="firing"}')
+          if [ "$burn" != none ]; then echo "::error title=slo::ErrorBudgetBurnFast fired during a TargetDown outage"; exit 1; fi
+      - name: Diagnostics on failure
         if: failure()
-        run: docker compose logs
+        run: |
+          annotate() { python3 -c 'import sys; t=sys.stdin.read()[-12000:]; print("::error title=" + sys.argv[1] + "::" + t.replace("%","%25").replace("\r","").replace("\n","%0A"))' "$1"; }
+          docker compose ps 2>&1 | annotate "compose ps"
+          for svc in pulsewatch prometheus alertmanager alert-sink grafana; do
+            docker compose logs --tail=40 "$svc" 2>&1 | annotate "$svc"
+          done
+          curl -fs localhost:9095/notifications 2>&1 | annotate "alert sink inbox"
       - run: docker compose down -v
         if: always()
 
   k8s-manifests:
     # Renders the kind overlay and schema-checks every resource against Kubernetes 1.30.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install kubeconform
         run: |
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
@@ -106,9 +200,10 @@ jobs:
   kind:
     # Deploys the overlay to a throwaway kind cluster and checks the whole stack end to end.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [test, k8s-manifests]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: helm/kind-action@v1
         with:
           cluster_name: pulsewatch
@@ -118,7 +213,7 @@ jobs:
       - run: kubectl apply -k deploy/k8s/overlays/kind
       - name: Wait for rollouts
         run: |
-          for d in pulsewatch prometheus grafana; do
+          for d in pulsewatch prometheus grafana alertmanager alert-sink; do
             kubectl -n pulsewatch rollout status deployment/$d --timeout=240s
           done
       - name: Port-forward
@@ -126,6 +221,7 @@ jobs:
           kubectl -n pulsewatch port-forward svc/pulsewatch 8000:8000 >/dev/null 2>&1 &
           kubectl -n pulsewatch port-forward svc/prometheus 9090:9090 >/dev/null 2>&1 &
           kubectl -n pulsewatch port-forward svc/grafana 3000:3000 >/dev/null 2>&1 &
+          kubectl -n pulsewatch port-forward svc/alert-sink 9095:9095 >/dev/null 2>&1 &
           sleep 5
       - name: API reports the kind region
         run: curl -fs localhost:8000/healthz | grep -q '"region":"kind-local"'
@@ -154,6 +250,25 @@ jobs:
           after=$(curl -fs 'localhost:8000/targets/example/results?limit=1000' | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
           echo "results before=$before after=$after"
           test "$after" -ge "$before"
+      - name: Alerts route through Alertmanager to the sink
+        run: |
+          for i in $(seq 1 30); do
+            curl -fs localhost:9090/api/v1/alertmanagers | grep -q 'alertmanager:9093' && break; sleep 2
+          done
+          curl -fs localhost:9090/api/v1/alertmanagers | grep -q 'alertmanager:9093'
+          make alerts-test SEVERITY=page
+          for i in $(seq 1 20); do
+            curl -fs 'localhost:9095/notifications?receiver=page' | grep -q PulsewatchTestAlert && break; sleep 3
+          done
+          make alerts-inbox | grep 'page firing PulsewatchTestAlert alerts-test'
+      - name: Telegram switches on from a local Secret and off again (fake token, nothing sent)
+        run: |
+          make alerts-telegram TELEGRAM_BOT_TOKEN=123456:ci-fake-token TELEGRAM_CHAT_ID=-100123 | tee tg.log
+          grep -q 'Telegram receiver enabled' tg.log
+          # start.sh keeps the token out of Alertmanager's own environment.
+          test "$(kubectl -n pulsewatch exec deploy/alertmanager -- sh -c 'tr "\0" "\n" < /proc/1/environ | grep -c TELEGRAM_BOT_TOKEN || true')" = 0
+          make alerts-telegram-off
+          kubectl -n pulsewatch logs deploy/alertmanager | grep -q 'alert sink only'
       - name: Diagnostics on failure
         if: failure()
         run: |
@@ -161,7 +276,7 @@ jobs:
           annotate() { python3 -c 'import sys; t=sys.stdin.read()[-12000:]; print("::error title=" + sys.argv[1] + "::" + t.replace("%","%25").replace("\r","").replace("\n","%0A"))' "$1"; }
           kubectl -n pulsewatch get all,pvc,cm 2>&1 | annotate "kubectl get"
           kubectl -n pulsewatch get events --sort-by=.lastTimestamp 2>&1 | tail -40 | annotate "events"
-          for d in pulsewatch prometheus grafana; do
+          for d in pulsewatch prometheus grafana alertmanager alert-sink; do
             { kubectl -n pulsewatch get pods -l app.kubernetes.io/name=$d -o wide; \
               kubectl -n pulsewatch logs deploy/$d --tail=60 --all-containers 2>&1; \
               kubectl -n pulsewatch logs deploy/$d --previous --tail=60 2>&1; } | annotate "$d"
@@ -170,9 +285,10 @@ jobs:
   kind-multi-region:
     # Two probe regions in separate namespaces, one Prometheus discovering both via the k8s API.
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [test, k8s-manifests]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: helm/kind-action@v1
         with:
           cluster_name: pulsewatch
@@ -212,17 +328,100 @@ jobs:
           kubectl -n pulsewatch logs deploy/prometheus --tail=60 2>&1 | annotate "prometheus"
           kubectl -n pulsewatch-eu logs deploy/pulsewatch --tail=40 2>&1 | annotate "pulsewatch-eu"
 
+  chaos:
+    # Chaos experiments on the multi-region stack, checked end to end (Prometheus rule ->
+    # Alertmanager route -> alert sink): a regional network partition must only warn, and
+    # losing probe agents must be noticed instead of silently shrinking the consensus.
+    runs-on: ubuntu-latest
+    needs: [test, k8s-manifests]
+    timeout-minutes: 40
+    env:
+      CHECK: python3 scripts/chaos_check.py --timeout 540
+    steps:
+      - uses: actions/checkout@v5
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: pulsewatch
+          config: deploy/k8s/kind-config.yaml
+      - run: docker build -t pulsewatch:dev .
+      - run: kind load docker-image pulsewatch:dev --name pulsewatch
+      - run: kubectl apply -k deploy/k8s/overlays/multi-region
+      - name: Wait for rollouts
+        run: make k8s-wait
+      - name: Port-forward Prometheus, Alertmanager and the alert sink
+        run: |
+          kubectl -n pulsewatch port-forward svc/prometheus 9090:9090 >/dev/null 2>&1 &
+          kubectl -n pulsewatch port-forward svc/alertmanager 9093:9093 >/dev/null 2>&1 &
+          kubectl -n pulsewatch port-forward svc/alert-sink 9095:9095 >/dev/null 2>&1 &
+          sleep 5
+      - name: Steady state - both regions see the target up
+        run: $CHECK wait-value 'count(pulsewatch_up{target="example"} == 1)' 2
+      - name: "Partition: us-sim loses its path to example.com"
+        run: make chaos-partition CHAOS_NS=pulsewatch-us CHAOS_HOST=example.com
+      - name: "Partition: only TargetDownInSomeRegions fires, routed to warn"
+        run: |
+          $CHECK wait-value 'pulsewatch_up{target="example", region="us-sim"}' 0
+          $CHECK wait-alert TargetDownInSomeRegions target=example region=us-sim
+          $CHECK wait-delivered warn TargetDownInSomeRegions target=example region=us-sim
+          # The other region still sees it up, so nothing pages and no error budget burns.
+          $CHECK never-fired TargetDown target=example --window 15m
+          $CHECK not-delivered page TargetDown target=example
+          $CHECK wait-value 'min_over_time(pulsewatch:target_up{target="example"}[10m])' 1
+      - name: "Kill region: the us-sim agent goes away"
+        run: |
+          make chaos-heal CHAOS_NS=pulsewatch-us
+          make chaos-kill-region CHAOS_NS=pulsewatch-us
+      - name: "Kill region: ProbeRegionMissing warns; eu-sim alone keeps alerting"
+        run: |
+          $CHECK wait-value 'count(count by (region) (pulsewatch_up))' 1
+          $CHECK wait-alert ProbeRegionMissing region=us-sim
+          $CHECK wait-delivered warn ProbeRegionMissing region=us-sim
+          # A missing region is not a down region.
+          $CHECK not-firing TargetDownInSomeRegions region=us-sim
+          $CHECK not-firing ProbeAgentsAbsent
+      - name: "Kill every region: ProbeAgentsAbsent pages and holds back the region warnings"
+        run: |
+          make chaos-kill-region CHAOS_NS=pulsewatch-eu
+          $CHECK wait-alert ProbeAgentsAbsent
+          $CHECK wait-delivered page ProbeAgentsAbsent
+          $CHECK wait-alert ProbeRegionMissing region=eu-sim
+          # Alertmanager has both region warnings and holds them back behind the page.
+          $CHECK --timeout 120 wait-inhibited ProbeRegionMissing region=eu-sim
+          $CHECK --timeout 120 wait-inhibited ProbeRegionMissing region=us-sim
+          $CHECK not-delivered warn ProbeRegionMissing region=eu-sim
+      - name: "Heal: both regions report again and the meta alerts clear"
+        run: |
+          make chaos-heal CHAOS_NS=pulsewatch-eu
+          make chaos-heal CHAOS_NS=pulsewatch-us
+          $CHECK wait-value 'count(count by (region) (pulsewatch_up))' 2
+          $CHECK wait-value 'count(pulsewatch_up{target="example"} == 1)' 2
+          $CHECK --timeout 120 wait-value 'count(ALERTS{alertname=~"Probe.*", alertstate="firing"}) or vector(0)' 0
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          annotate() { python3 -c 'import sys; t=sys.stdin.read()[-12000:]; print("::error title=" + sys.argv[1] + "::" + t.replace("%","%25").replace("\r","").replace("\n","%0A"))' "$1"; }
+          kubectl get pods,svc -A -l app.kubernetes.io/part-of=pulsewatch -o wide 2>&1 | annotate "pods"
+          kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -40 | annotate "events"
+          make chaos-alerts 2>&1 | annotate "prometheus alerts"
+          curl -fsG localhost:9090/api/v1/query --data-urlencode 'query=pulsewatch_up' 2>&1 | annotate "pulsewatch_up"
+          make alerts-inbox 2>&1 | annotate "alert sink inbox"
+          for ns in pulsewatch-eu pulsewatch-us; do
+            kubectl -n $ns logs deploy/pulsewatch --tail=40 2>&1 | annotate "agent $ns"
+          done
+          kubectl -n pulsewatch logs deploy/alertmanager --tail=40 2>&1 | annotate "alertmanager"
+
   argocd:
     # GitOps end to end: Argo CD on kind deploys the multi-region stack from this
     # commit on GitHub, then puts back a Deployment that was deleted by hand (self-heal).
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [test, k8s-manifests]
     env:
       # The commit under test (the PR head on pull_request events, not the merge commit).
       REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       GITOPS_REPO: ${{ github.server_url }}/${{ github.event.pull_request.head.repo.full_name || github.repository }}.git
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: helm/kind-action@v1
         with:
           cluster_name: pulsewatch
@@ -231,8 +430,21 @@ jobs:
       - run: kind load docker-image pulsewatch:dev --name pulsewatch
       - name: Pre-pull Argo CD images on the runner (retries; registry errors show up here, not as ImagePullBackOff)
         run: |
+          # public.ecr.aws/docker/library/* is ECR's mirror of Docker Hub official images and
+          # sometimes answers "toomanyrequests: Data limit exceeded". Fall back to the same
+          # image on Docker Hub and tag it with the name the Argo CD manifests use.
+          pull() {
+            for i in 1 2 3; do docker pull -q "$1" && return 0; sleep 10; done
+            case $1 in
+              public.ecr.aws/docker/library/*)
+                alt=docker.io/library/${1#public.ecr.aws/docker/library/}
+                echo "::warning title=pull::$1 unavailable, using $alt"
+                docker pull -q "$alt" && docker tag "$alt" "$1" && return 0 ;;
+            esac
+            return 1
+          }
           for img in $(kubectl kustomize deploy/argocd/install | sed -n 's/^ *image: //p' | sort -u | grep -v dexidp); do
-            for i in 1 2 3; do docker pull -q "$img" && break; sleep 10; done || { echo "::error title=pull::$img"; exit 1; }
+            pull "$img" || { echo "::error title=pull::$img"; exit 1; }
             kind load docker-image "$img" --name pulsewatch
           done
       - run: make argocd-install
@@ -280,15 +492,39 @@ jobs:
           kubectl get pods,svc -A -l app.kubernetes.io/part-of=pulsewatch -o wide 2>&1 | annotate "pulsewatch pods"
           kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -40 | annotate "events"
 
+  terraform-lock:
+    # The committed .terraform.lock.hcl must pin every provider and carry checksums for every
+    # platform in TF_LOCK_PLATFORMS. Without it, `terraform init` silently picked up a new
+    # provider release overnight and broke `kind load`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - run: make tf-lock
+      - name: Lockfile is committed and complete
+        run: |
+          lock=infra/terraform/.terraform.lock.hcl
+          if [ -z "$(git status --porcelain -- "$lock")" ]; then exit 0; fi
+          git --no-pager diff -- "$lock" || true
+          # The full regenerated file, so it can be committed as-is (make tf-lock locally does the same).
+          python3 -c 'import sys; t=open(sys.argv[1]).read(); print("::error title=.terraform.lock.hcl is missing or incomplete; commit this file (make tf-lock)::" + t.replace("%","%25").replace("\r","").replace("\n","%0A"))' "$lock"
+          cat "$lock"
+          exit 1
+
   terraform:
     # infra/terraform: fmt + validate, then a real apply (kind cluster + multi-region stack) and destroy.
     runs-on: ubuntu-latest
-    needs: [test, k8s-manifests]
+    timeout-minutes: 30
+    needs: [test, k8s-manifests, terraform-lock]
     defaults:
       run:
         working-directory: infra/terraform
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
@@ -297,7 +533,8 @@ jobs:
         with:
           install_only: true
       - run: terraform fmt -check -recursive -diff
-      - run: terraform init -input=false
+      # readonly: provider versions come from the committed lockfile, never from "latest".
+      - run: terraform init -input=false -lockfile=readonly
       - run: terraform validate
       - run: terraform apply -input=false -auto-approve
       - name: Stack is healthy

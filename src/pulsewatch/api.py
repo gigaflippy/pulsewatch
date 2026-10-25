@@ -36,6 +36,7 @@ def create_app(
     by_name = {t.name: t for t in targets}
     storage = Storage(settings.db_path)
     metrics = Metrics()
+    metrics.register_targets(targets, settings.region)
     scheduler = Scheduler(
         targets,
         storage,

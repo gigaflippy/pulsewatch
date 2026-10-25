@@ -11,7 +11,7 @@ spec:
   goTemplateOptions: ["missingkey=error"]
   generators:
     - git:
-        repoURL: https://github.com/gigaflippy/Firstproject.git
+        repoURL: https://github.com/gigaflippy/pulsewatch.git
         # HEAD = the repo's default branch. `make argocd-bootstrap ARGOCD_REVISION=<ref>`
         # (and CI, with the commit under test) points everything at another ref.
         revision: HEAD
@@ -28,7 +28,7 @@ spec:
     spec:
       project: pulsewatch
       source:
-        repoURL: https://github.com/gigaflippy/Firstproject.git
+        repoURL: https://github.com/gigaflippy/pulsewatch.git
         targetRevision: HEAD
         path: "{{.path.path}}"
       destination:
