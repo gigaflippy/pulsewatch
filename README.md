@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/pulsewatch-logo-dark.svg">
+    <img src="docs/brand/pulsewatch-logo.svg" alt="Pulsewatch" height="64">
+  </picture>
+</p>
+
 # Pulsewatch
 
 Distributed uptime and latency monitor. Probes HTTP endpoints on a schedule, stores results, serves uptime/latency stats over a REST API, and exposes Prometheus metrics. It is built to run entirely on local infrastructure (Docker, local Kubernetes) at zero cost.
