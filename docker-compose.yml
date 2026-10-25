@@ -17,7 +17,7 @@ services:
     image: prom/prometheus:v2.54.1
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.time=8d
     volumes:
       - ./deploy/prometheus:/etc/prometheus:ro
     ports:

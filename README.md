@@ -93,7 +93,7 @@ The consensus has a blind spot that the two `Probe*` alerts close: it only count
 
 ### SLOs and error budgets
 
-Every target has an availability objective (`slo_objective`, default **99.5%**) over a rolling **7-day** window. 7 days is as much history as Prometheus keeps here. At 99.5% the budget is about 50 minutes of downtime a week.
+Every target has an availability objective (`slo_objective`, default **99.5%**) over a rolling **7-day** window. Prometheus keeps 8 days of data, one day more than the window, so the oldest part of the window is never already deleted. At 99.5% the budget is about 50 minutes of downtime a week.
 
 - **SLI: up from at least one region.** The rules use the same consensus as `TargetDown`: `pulsewatch:target_up = max by (target) (pulsewatch_up)`. A broken probe location never spends budget, so it can't page through the SLO alerts either. That case is a `TargetDownInSomeRegions` warning.
 - **Recording rules:** `pulsewatch:slo_error_ratio:{5m,30m,1h,6h,3d,7d}`, `pulsewatch:slo_burn_rate:{1h,6h}` and `pulsewatch:slo_error_budget_remaining:7d` (1 = untouched, 0 = spent, below 0 = SLO missed).

@@ -13,7 +13,7 @@ groups:
   #
   # SLI: the fraction of time the target is up from at least one region. This is the same
   # consensus rule TargetDown uses, so one bad probe location burns no budget and can't page.
-  # SLO window: 7 days (Prometheus keeps 7d). Objective: slo_objective in targets.yaml
+  # SLO window: 7 days (Prometheus keeps 8d, so the 7d window always has full data). Objective: slo_objective in targets.yaml
   # (default 0.995), exported by every agent as pulsewatch_slo_objective.
   - name: pulsewatch.slo
     rules:
