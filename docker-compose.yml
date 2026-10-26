@@ -14,7 +14,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: prom/prometheus:v2.54.1@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=8d
@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
     # start.sh adds Telegram only when both variables are set (in a git-ignored .env).
     entrypoint: ["/bin/sh", "/etc/alertmanager/start.sh"]
     command: ["--storage.path=/alertmanager", "--cluster.listen-address="]
@@ -54,7 +54,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana-oss:11.2.2
+    image: grafana/grafana-oss:11.2.2@sha256:d5133220d770aba5cb655147b619fa8770b90f41d8489a821d33b1cd34d16f89
     environment:
       # Local-only defaults: anonymous read-only viewing, admin/admin for editing.
       # Every port is published on 127.0.0.1 only, so other machines cannot reach these.
