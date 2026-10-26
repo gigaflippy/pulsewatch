@@ -181,8 +181,11 @@ deploy/                everything that runs the service
 
 infra/terraform/       creates the kind cluster, loads the image, applies an overlay
 scripts/chaos_check.py checks used by the chaos experiments
-tests/                 113 tests: code, configs, manifests, alerting, Terraform, Argo CD
-.github/workflows/     CI (11 jobs, section 7)
+scripts/pin_images.py  finds images referenced by tag only, and pins them by digest
+tests/                 134 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins
+requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
+.github/workflows/     CI (12 jobs, section 7)
+.github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
 Makefile               every command you type: kind-up, argocd-up, chaos-*, alerts-*
 docker-compose.yml     the quickest way to run everything
 DECISIONS.md           the decisions you made, with options and reasons
@@ -197,6 +200,8 @@ When you change something, this table tells you where:
 | Change who gets notified | `deploy/alertmanager/alertmanager.yml` **and** `alertmanager-telegram.yml` (a test fails if they differ) |
 | Add a region | copy `deploy/k8s/overlays/multi-region/region-us/`, rename it, list it in the parent `kustomization.yaml` |
 | Add an API endpoint | `src/pulsewatch/api.py` and `tests/test_api.py` |
+| Add or upgrade a Python dependency | `pyproject.toml`, then `make lock` (needs `pip install pip-tools`) and commit the `requirements*.txt` it changes |
+| Change an image version | the tag in `docker-compose.yml`, `deploy/k8s/monitoring/` and the `env:` block of `ci.yml` (a test keeps them equal). Delete the old `@sha256:…` and run `make pin-images` |
 
 ---
 
@@ -263,12 +268,13 @@ Take a screenshot of Grafana while the partition is active. It is the best pictu
 
 ## 7. What CI proves on every change
 
-CI (`.github/workflows/ci.yml`) runs 11 jobs on every push. Most finish in 1 to 3 minutes. `chaos` takes about 20.
+CI (`.github/workflows/ci.yml`) runs 12 jobs on every push. Most finish in 1 to 3 minutes. `chaos` takes about 20.
 
 | Job | What it proves |
 |---|---|
-| `lint` | Code style (ruff) |
-| `test` | 113 unit and config tests on Python 3.11, 3.12 and 3.13 |
+| `lint` | Code style (ruff, at the locked version) |
+| `test` | 134 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt` |
+| `pins` | Every image the repo pulls is pinned by digest (if not, the job prints the pinned refs to commit). The lockfiles install with `--require-hashes` and satisfy `pyproject.toml` (`pip check`) |
 | `docker` | The image builds and the container answers `/healthz` |
 | `stack` | The full compose stack runs. Alert rules pass their unit tests (`promtool test rules`). Routing goes to the right receiver (`amtool`). A target that is always down produces `TargetDown`, and it arrives in the `page` inbox |
 | `k8s-manifests` | Every overlay renders and is valid Kubernetes (kubeconform, strict) |
@@ -293,6 +299,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 - **Nothing watches Alertmanager from outside.** If Alertmanager is down, no alert can reach you (section 4.2).
 - **No authentication anywhere.** It is a local stack. Compose publishes every port on `127.0.0.1` only, and in Kubernetes you reach things through `kubectl port-forward`. Grafana's `admin/admin` is a local default.
 - **The image is side-loaded, not pulled.** `kind load` puts the image into the cluster directly, so no registry is needed. Argo CD therefore syncs manifests but not image versions.
+- **Reproducible, not bit-for-bit identical.** Every input is pinned (Python packages with hashes, base and monitoring images by digest, actions by commit SHA, Terraform providers by lockfile), but `apt` packages inside the base image and file timestamps are not, so two builds of the same commit give the same software, not the same image digest. Argo CD's own install manifests are pinned by version, not digest. Dependabot bumps `docker-compose.yml` on its own, so its PR for a monitoring image stays red until you copy the new ref into `deploy/k8s/monitoring/` and `ci.yml` on the same branch.
 - **The version number is still `0.1.0`.** The code has grown a lot since then. Tag a release (for example `v1.0.0`) when you are happy with it.
 
 ---
@@ -302,7 +309,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 **Three real problems from building this, and what fixed them:**
 
 1. **The pod that crashed for no reason.** On Kubernetes, the agent crashed at startup with "PULSEWATCH_PORT: unable to parse `tcp://10.96.x.x:8000` as an integer". Cause: Kubernetes injects Docker-link style environment variables for every Service, and a Service named `pulsewatch` produces `PULSEWATCH_PORT`, which collides with the app's own `PULSEWATCH_*` settings. Fix: `enableServiceLinks: false` on every pod, and a regression test that fails if anyone removes it.
-2. **CI went red overnight with no change in the repo.** The Terraform job failed one morning. Cause: there was no provider lockfile, so `terraform init` picked up a new `tehcyx/kind` provider release that broke `kind load`. Fix: commit `.terraform.lock.hcl`, pin the kind node image, and a CI job that fails if the lockfile is incomplete. Lesson: an unpinned dependency is a change you did not review.
+2. **CI went red overnight with no change in the repo.** The Terraform job failed one morning. Cause: there was no provider lockfile, so `terraform init` picked up a new `tehcyx/kind` provider release that broke `kind load`. Fix: commit `.terraform.lock.hcl`, pin the kind node image, and a CI job that fails if the lockfile is incomplete. Lesson: an unpinned dependency is a change you did not review. The same lesson later went everywhere: Python lockfiles with hashes, images by digest, actions by commit SHA, and Dependabot so that pins don't rot.
 3. **Argo CD stuck in ImagePullBackOff.** Argo CD's Redis image comes from `public.ecr.aws`, which rate-limits, and upstream sets `imagePullPolicy: Always`. Fix: pre-pull the images with retries in CI, and patch the policy to `IfNotPresent`.
 
 **Common questions about the design:**
@@ -311,6 +318,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 - *What if the monitoring itself dies?* `ProbeRegionMissing` and `ProbeAgentsAbsent` cover lost probe agents, and `AlertmanagerNotificationsFailing` covers a broken receiver. Alertmanager being down is not covered (section 4.2).
 - *Why SLO burn rates on top of TargetDown?* TargetDown misses intermittent failures. A burn rate measures how fast the error budget goes, with a long and a short window so it is neither noisy nor slow to clear.
 - *Why Kustomize and not Helm?* There is one app with small differences per environment. Overlays express that directly, and kubectl and Argo CD support them with no extra tool.
+- *Is the build reproducible?* Every input is pinned: Python packages by version and hash (`requirements*.txt`, installed with `--require-hashes`, so a tampered or unlisted package fails the build), images by digest (a tag can be re-pushed; a digest can't), GitHub Actions by commit SHA, Terraform providers by lockfile. Dependabot opens a weekly PR per ecosystem, and CI decides whether it's safe. So nothing changes unless a reviewed PR changes it.
 - *How do you keep secrets out of Git?* The Telegram token only exists on the owner's machine. It goes into a git-ignored `.env` or a Kubernetes Secret created from your shell, and Alertmanager reads it from a 0600 file, never from a config file.
 - *What would you change for production?* Real clusters per region, a registry with signed images, persistent Prometheus storage or remote-write, authentication in front of the UIs, and Postgres instead of SQLite.
 
@@ -337,4 +345,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 | **GitOps** | The cluster follows what is in Git. Argo CD makes that happen |
 | **ApplicationSet** | An Argo CD object that creates one Application per folder it finds |
 | **IaC** | Infrastructure as code. Here: Terraform describes the cluster and what runs on it |
+| **Lockfile** | A file listing the exact version (and here the hash) of every dependency, so every install gets the same packages: `requirements*.txt`, `.terraform.lock.hcl` |
+| **Digest** | The `sha256:…` content hash of an image. Unlike a tag, it always means the same bytes |
+| **Dependabot** | GitHub's bot that opens PRs to update pinned versions |
 | **Chaos experiment** | Breaking something on purpose to prove the alerts work |

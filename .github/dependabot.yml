@@ -1,0 +1,42 @@
+# Dependabot keeps every pin in this repo current, one weekly PR per ecosystem, and CI
+# (lockfile install with hashes, image pins, the full kind/Terraform stack) vets each one.
+version: 2
+updates:
+  # requirements*.txt are pip-compile lockfiles generated from pyproject.toml (make lock);
+  # Dependabot recompiles them with hashes.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  # Dockerfile base image: tag and digest move together.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Prometheus, Alertmanager and Grafana in docker-compose.yml. The same refs live in
+  # deploy/k8s/monitoring and the CI env block; tests/test_k8s_manifests.py fails until all
+  # three match, so copy the new ref there on the Dependabot branch before merging.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Workflow actions are pinned to commit SHAs with the version as a comment.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Provider versions in infra/terraform/.terraform.lock.hcl.
+  - package-ecosystem: terraform
+    directory: /infra/terraform
+    schedule:
+      interval: weekly

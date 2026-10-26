@@ -246,7 +246,7 @@ terraform destroy
 
 - **Providers:** `tehcyx/kind` creates the cluster and `kbst/kustomization` applies the same Kustomize overlays that `kubectl apply -k` uses. There's one source of manifests, applied in priority order (namespaces and RBAC, then workloads).
 - **Image:** rebuilt and reloaded only when `src/`, the `Dockerfile` or `pyproject.toml` change (content hash), so a second `terraform apply` changes nothing.
-- **Node image** is pinned (`node_image`, kind v0.31's `kindest/node:v1.35.0`) so the cluster always matches the `kind` CLI that loads the image. Left to the provider default, a provider release moved it to a node `kind load` can't talk to.
+- **Node image** is pinned (`node_image`, kind v0.31's `kindest/node:v1.35.0`, by tag and digest) so the cluster always matches the `kind` CLI that loads the image. Left to the provider default, a provider release moved it to a node `kind load` can't talk to.
 - **State** stays local and is git-ignored, along with the generated `kubeconfig`. No backend or account is needed.
 - **Provider lockfile.** `.terraform.lock.hcl` is committed and pins exact provider versions with checksums for Linux, macOS (Intel and Apple silicon) and Windows. Every `terraform init` gets the same providers. Without it, `init` picked up a new `tehcyx/kind` release overnight and broke `kind load` with no change in this repo. `make tf-upgrade` moves to the newest versions the constraints allow; review the diff and commit it. `make tf-lock` only adds missing platform checksums. CI's `terraform-lock` job fails if the committed file is missing a provider or a platform and prints the regenerated file. The `terraform` job runs `init -lockfile=readonly`.
 - **Needs** `terraform`, `docker` and `kind` (for `kind load`).
@@ -306,6 +306,19 @@ ruff check . && ruff format --check .
 pytest
 ```
 
+To get exactly what CI and the image use, install from the hash-locked files instead:
+`pip install --require-hashes -r requirements-dev.txt && pip install --no-deps --no-build-isolation -e .`
+
+### Reproducible builds
+
+Every input to a build is pinned, so nothing changes unless a reviewed PR changes it:
+
+- **Python:** `requirements.txt` (runtime), `requirements-build.txt` (hatchling) and `requirements-dev.txt` are pip-compile lockfiles with a hash for every package. The image and CI install with `--require-hashes`, so an unlisted or tampered package fails the build. After editing `pyproject.toml`, run `make lock` (needs `pip install pip-tools`).
+- **Images:** the base image and the Prometheus, Alertmanager, Grafana and kind node images are pinned by digest (`name:tag@sha256:…`). The `pins` CI job fails on a tag-only reference and prints the pinned ref; `make pin-images` does the same locally.
+- **CI:** every GitHub Action is pinned to a commit SHA, with its version as a comment.
+- **Terraform:** providers come from the committed `.terraform.lock.hcl`.
+- **Dependabot** (`.github/dependabot.yml`) opens weekly PRs for pip, the Dockerfile, docker-compose, GitHub Actions and Terraform, and CI vets each one.
+
 CI (GitHub Actions) runs lint, tests on Python 3.11 to 3.13, a Docker build with a smoke test, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
 
 ## How this was built
@@ -334,4 +347,17 @@ Beyond the original roadmap:
 - ~~Per-target availability SLOs: error-budget recording rules, multiwindow burn-rate alerts, dashboard row~~ ✅
 - ~~Chaos experiments (regional partition, lost region, all agents lost), CI-tested on kind, plus meta-monitoring alerts for lost probe agents~~ ✅
 - ~~Project guide with architecture diagrams ([docs/GUIDE.md](docs/GUIDE.md))~~ ✅
-- Next candidates: k6 load test of the API, a Helm chart.
+
+### This week (26 Oct – 1 Nov 2026)
+
+Nightly runs take these in order, one per night. A run skips ahead if an item is blocked on a decision.
+
+1. ~~**Reproducible builds:** pinned Python dependency lockfile with hashes, base images pinned by digest, Dependabot for pip, Docker, GitHub Actions and Terraform.~~ ✅
+2. **Image scanning:** Trivy scan in CI that fails on fixable critical vulnerabilities, plus an SBOM (list of everything in the image) saved as a build artifact.
+3. **NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.
+4. **Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.
+5. **Type checking and coverage:** mypy and a test-coverage report in CI.
+6. **Watching the watcher:** an always-firing Watchdog alert, and the alert sink reports when the heartbeat stops (Alertmanager or Prometheus down).
+7. **Release pipeline:** on a `v*` tag, CI builds the image and creates a GitHub release with the SBOM. Pushing the image to a public registry waits on D-005.
+
+Later: k6 load test of the API, a Helm chart, TCP/DNS/TLS-expiry probes, logs with Loki.
