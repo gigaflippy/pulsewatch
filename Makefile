@@ -216,9 +216,9 @@ TRIVY = docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
 scan:
 	docker build -t $(IMAGE) .
 	mkdir -p scan
-	$(TRIVY) image --no-progress --scanners vuln --format json --output /scan/trivy.json $(IMAGE)
-	$(TRIVY) image --skip-db-update --no-progress --scanners vuln --format table --output /scan/trivy.txt $(IMAGE)
-	$(TRIVY) image --skip-db-update --no-progress --format cyclonedx --output /scan/sbom.cdx.json $(IMAGE)
+	$(TRIVY) image --no-progress --skip-version-check --scanners vuln --format json --output /scan/trivy.json $(IMAGE)
+	$(TRIVY) image --skip-db-update --no-progress --skip-version-check --scanners vuln --format table --output /scan/trivy.txt $(IMAGE)
+	$(TRIVY) image --skip-db-update --no-progress --skip-version-check --format cyclonedx --output /scan/sbom.cdx.json $(IMAGE)
 	python3 scripts/trivy_gate.py scan/trivy.json
 
 # Chaos experiments. Run against a kubectl/Terraform deploy of the multi-region overlay:
