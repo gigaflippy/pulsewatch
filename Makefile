@@ -17,7 +17,7 @@ CHAOS_HOST ?= example.com
 
 .PHONY: help kind-up kind-down k8s-apply k8s-wait k8s-validate k8s-forward k8s-status \
 	argocd-up argocd-install argocd-bootstrap argocd-wait argocd-status argocd-ui \
-	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade \
+	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade lock lock-upgrade pin-images scan \
 	chaos-partition chaos-kill-region chaos-heal chaos-alerts
 
 help:
@@ -44,6 +44,12 @@ help:
 	@echo ""
 	@echo "make tf-lock       add any missing provider checksums to infra/terraform/.terraform.lock.hcl"
 	@echo "make tf-upgrade    move the lockfile to the newest provider versions the constraints allow"
+	@echo ""
+	@echo "make lock          regenerate requirements*.txt (pinned + hashed) from pyproject.toml"
+	@echo "make lock-upgrade  same, moving every pin to the newest version pyproject.toml allows"
+	@echo "make pin-images    pin any image referenced by tag only to its current digest (needs docker buildx)"
+	@echo "make scan          build the image, scan it with Trivy (same pinned version and policy as CI),"
+	@echo "                   write scan/sbom.cdx.json + scan/trivy.txt; fails on fixable criticals"
 
 kind-up:
 	@kind get clusters | grep -qx '$(CLUSTER)' || kind create cluster --config deploy/k8s/kind-config.yaml --name $(CLUSTER)
@@ -179,6 +185,41 @@ tf-lock:
 tf-upgrade:
 	cd infra/terraform && terraform init -backend=false -upgrade -input=false >/dev/null
 	$(MAKE) tf-lock
+
+# Python lockfiles (pip-tools), every package pinned with its hashes:
+#   requirements.txt        runtime dependencies (what the image ships)
+#   requirements-build.txt  the build backend (hatchling), used only to build the image's wheel
+#   requirements-dev.txt    runtime + build + dev tools, constrained to the same versions
+# Existing pins are kept unless you run lock-upgrade. Dependabot (pip) regenerates them too.
+PIP_COMPILE = CUSTOM_COMPILE_COMMAND="make lock" pip-compile --quiet --generate-hashes \
+	--strip-extras --allow-unsafe --no-emit-index-url $(PIP_COMPILE_ARGS)
+lock:
+	$(PIP_COMPILE) -o requirements.txt pyproject.toml
+	$(PIP_COMPILE) --all-build-deps --only-build-deps -o requirements-build.txt pyproject.toml
+	$(PIP_COMPILE) --extra dev --all-build-deps -c requirements.txt -c requirements-build.txt \
+		-o requirements-dev.txt pyproject.toml
+
+lock-upgrade:
+	$(MAKE) lock PIP_COMPILE_ARGS=--upgrade
+
+# Container images: tag for humans, digest for what actually gets pulled. CI fails on a
+# tag-only reference and prints the pinned refs. To move a pin, change the tag and drop
+# the old @sha256:... part, then run this.
+pin-images:
+	python3 scripts/pin_images.py --write
+
+# Image scan, same as the CI image-scan job: Trivy pinned by digest (read from ci.yml so the
+# two never drift), the vulnerability DB cached in a Docker volume between runs.
+TRIVY_IMAGE = $(shell sed -n 's/^  TRIVY_IMAGE: //p' .github/workflows/ci.yml)
+TRIVY = docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+	-v pulsewatch-trivy-cache:/root/.cache/trivy -v "$(CURDIR)/scan:/scan" $(TRIVY_IMAGE)
+scan:
+	docker build -t $(IMAGE) .
+	mkdir -p scan
+	$(TRIVY) image --no-progress --skip-version-check --scanners vuln --format json --output /scan/trivy.json $(IMAGE)
+	$(TRIVY) image --skip-db-update --no-progress --skip-version-check --scanners vuln --format table --output /scan/trivy.txt $(IMAGE)
+	$(TRIVY) image --skip-db-update --no-progress --skip-version-check --format cyclonedx --output /scan/sbom.cdx.json $(IMAGE)
+	python3 scripts/trivy_gate.py scan/trivy.json
 
 # Chaos experiments. Run against a kubectl/Terraform deploy of the multi-region overlay:
 # under Argo CD, self-heal reverts these patches within a minute (which is its own demo).
