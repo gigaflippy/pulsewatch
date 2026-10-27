@@ -182,9 +182,10 @@ deploy/                everything that runs the service
 infra/terraform/       creates the kind cluster, loads the image, applies an overlay
 scripts/chaos_check.py checks used by the chaos experiments
 scripts/pin_images.py  finds images referenced by tag only, and pins them by digest
-tests/                 134 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins
+scripts/trivy_gate.py  image-scan policy: fail on fixable critical vulnerabilities, report the rest
+tests/                 144 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan
 requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
-.github/workflows/     CI (12 jobs, section 7)
+.github/workflows/     CI (13 jobs, section 7)
 .github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
 Makefile               every command you type: kind-up, argocd-up, chaos-*, alerts-*
 docker-compose.yml     the quickest way to run everything
@@ -262,20 +263,22 @@ Take a screenshot of Grafana while the partition is active. It is the best pictu
 | Grafana panels say "No data" | Prometheus has not scraped yet, or the time range is too short | Wait one minute. Check http://localhost:9090/targets: every target must be `UP` |
 | Argo CD apps stay `OutOfSync` or `Missing` | Argo CD polls GitHub every 60 seconds, or the branch does not exist | Wait one minute, then `make argocd-status`. `ARGOCD_REVISION` must be a pushed branch or commit |
 | No Telegram message | Token or chat id is wrong, or you did not message the bot first | `make alerts-inbox` shows what Alertmanager sent. Alertmanager logs show the Telegram error (they contain the token, so do not paste them anywhere) |
+| `image-scan` fails in CI | A critical vulnerability with a fix is in the image. The job summary lists each CVE, its package and the version that fixes it | A Debian package: merge Dependabot's `python:3.13-slim` digest bump (or pin the newer digest yourself). A Python package: `make lock-upgrade`. Then `make scan` to confirm |
 | A test fails after you edit a config | The tests check that files agree with each other | Read the assertion message. It names the two things that differ |
 
 ---
 
 ## 7. What CI proves on every change
 
-CI (`.github/workflows/ci.yml`) runs 12 jobs on every push. Most finish in 1 to 3 minutes. `chaos` takes about 20.
+CI (`.github/workflows/ci.yml`) runs 13 jobs on every push. Most finish in 1 to 3 minutes. `chaos` takes about 20.
 
 | Job | What it proves |
 |---|---|
 | `lint` | Code style (ruff, at the locked version) |
-| `test` | 134 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt` |
+| `test` | 144 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt` |
 | `pins` | Every image the repo pulls is pinned by digest (if not, the job prints the pinned refs to commit). The lockfiles install with `--require-hashes` and satisfy `pyproject.toml` (`pip check`) |
 | `docker` | The image builds and the container answers `/healthz` |
+| `image-scan` | Trivy scans the image (Debian packages and Python wheels). It fails on a **critical vulnerability that has a fix**, and reports everything else in the job summary. The SBOM (`sbom.cdx.json`, CycloneDX: every package in the image with its version) and the full report are saved as the `image-scan` build artifact. Run the same scan locally with `make scan` |
 | `stack` | The full compose stack runs. Alert rules pass their unit tests (`promtool test rules`). Routing goes to the right receiver (`amtool`). A target that is always down produces `TargetDown`, and it arrives in the `page` inbox |
 | `k8s-manifests` | Every overlay renders and is valid Kubernetes (kubeconform, strict) |
 | `kind` | One region on a real kind cluster: API, scrape, dashboard, results survive a pod restart, Telegram on/off with a fake token |
@@ -297,6 +300,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 - **SQLite allows one writer.** Each region therefore runs exactly one agent (`replicas: 1`, `strategy: Recreate`). You scale out by adding regions, not replicas. `storage.py` is the place to swap in Postgres.
 - **Prometheus data lives on an `emptyDir` in Kubernetes.** A Prometheus pod restart deletes the history, so the 7-day SLO numbers are then calculated from only the time since the restart. On a fresh cluster or after a restart, a short failure counts for a large share of that short history, and `ErrorBudgetBurnSlow` can warn early. A real setup uses a PersistentVolume.
 - **Nothing watches Alertmanager from outside.** If Alertmanager is down, no alert can reach you (section 4.2).
+- **Images are scanned when they are built, not afterwards.** A CVE published next week is only caught by the next CI run (Dependabot's weekly PRs trigger one). Production would also rescan the images that are deployed, on a schedule, or let the registry do it. Critical vulnerabilities with no fix yet pass the gate on purpose; they show up in the job summary.
 - **No authentication anywhere.** It is a local stack. Compose publishes every port on `127.0.0.1` only, and in Kubernetes you reach things through `kubectl port-forward`. Grafana's `admin/admin` is a local default.
 - **The image is side-loaded, not pulled.** `kind load` puts the image into the cluster directly, so no registry is needed. Argo CD therefore syncs manifests but not image versions.
 - **Reproducible, not bit-for-bit identical.** Every input is pinned (Python packages with hashes, base and monitoring images by digest, actions by commit SHA, Terraform providers by lockfile), but `apt` packages inside the base image and file timestamps are not, so two builds of the same commit give the same software, not the same image digest. Argo CD's own install manifests are pinned by version, not digest. Dependabot bumps `docker-compose.yml` on its own, so its PR for a monitoring image stays red until you copy the new ref into `deploy/k8s/monitoring/` and `ci.yml` on the same branch.
@@ -319,6 +323,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 - *Why SLO burn rates on top of TargetDown?* TargetDown misses intermittent failures. A burn rate measures how fast the error budget goes, with a long and a short window so it is neither noisy nor slow to clear.
 - *Why Kustomize and not Helm?* There is one app with small differences per environment. Overlays express that directly, and kubectl and Argo CD support them with no extra tool.
 - *Is the build reproducible?* Every input is pinned: Python packages by version and hash (`requirements*.txt`, installed with `--require-hashes`, so a tampered or unlisted package fails the build), images by digest (a tag can be re-pushed; a digest can't), GitHub Actions by commit SHA, Terraform providers by lockfile. Dependabot opens a weekly PR per ecosystem, and CI decides whether it's safe. So nothing changes unless a reviewed PR changes it.
+- *How do you know the image is safe to ship?* CI scans every build with Trivy and fails on a critical vulnerability that has a fix. Lower severities and criticals with no fix yet are reported, not blocking, because a gate nobody can make green gets ignored. Each run keeps an SBOM (CycloneDX), so when a new CVE is announced you can check which builds contain the package without rebuilding anything.
 - *How do you keep secrets out of Git?* The Telegram token only exists on the owner's machine. It goes into a git-ignored `.env` or a Kubernetes Secret created from your shell, and Alertmanager reads it from a 0600 file, never from a config file.
 - *What would you change for production?* Real clusters per region, a registry with signed images, persistent Prometheus storage or remote-write, authentication in front of the UIs, and Postgres instead of SQLite.
 

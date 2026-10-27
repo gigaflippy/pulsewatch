@@ -16,7 +16,7 @@ env:
   # Image scanner. 0.69.4-0.69.6 were a supply-chain compromise (GHSA-69fq-xp46-6x23), which
   # is exactly why this is pinned by digest. Dependabot does not read workflow env, so bump
   # it by hand: change the tag, drop the digest, `make pin-images`.
-  TRIVY_IMAGE: aquasec/trivy:0.69.3
+  TRIVY_IMAGE: aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
 
 jobs:
   lint:
