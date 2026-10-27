@@ -138,3 +138,15 @@ def test_trivy_is_pinned_and_not_a_compromised_release(ci):
     tag = ref.split(":", 1)[1].split("@", 1)[0]
     # GHSA-69fq-xp46-6x23: these image tags shipped malicious code in March 2026.
     assert tag not in {"0.69.4", "0.69.5", "0.69.6", "latest"}
+
+
+def test_make_scan_uses_the_ci_trivy_and_gate(ci):
+    # `make scan` reads the Trivy ref out of ci.yml with sed, so the two cannot drift; this
+    # fails if the env line moves or is re-indented and the sed would come back empty.
+    make = (ROOT / "Makefile").read_text()
+    assert "sed -n 's/^  TRIVY_IMAGE: //p' .github/workflows/ci.yml" in make
+    lines = (ROOT / ".github" / "workflows" / "ci.yml").read_text().splitlines()
+    assert [
+        ln.removeprefix("  TRIVY_IMAGE: ") for ln in lines if ln.startswith("  TRIVY_IMAGE: ")
+    ] == [ci["env"]["TRIVY_IMAGE"]]
+    assert "python3 scripts/trivy_gate.py scan/trivy.json" in make

@@ -183,7 +183,7 @@ infra/terraform/       creates the kind cluster, loads the image, applies an ove
 scripts/chaos_check.py checks used by the chaos experiments
 scripts/pin_images.py  finds images referenced by tag only, and pins them by digest
 scripts/trivy_gate.py  image-scan policy: fail on fixable critical vulnerabilities, report the rest
-tests/                 144 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan
+tests/                 145 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan
 requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
 .github/workflows/     CI (13 jobs, section 7)
 .github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
@@ -275,7 +275,7 @@ CI (`.github/workflows/ci.yml`) runs 13 jobs on every push. Most finish in 1 to 
 | Job | What it proves |
 |---|---|
 | `lint` | Code style (ruff, at the locked version) |
-| `test` | 144 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt` |
+| `test` | 145 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt` |
 | `pins` | Every image the repo pulls is pinned by digest (if not, the job prints the pinned refs to commit). The lockfiles install with `--require-hashes` and satisfy `pyproject.toml` (`pip check`) |
 | `docker` | The image builds and the container answers `/healthz` |
 | `image-scan` | Trivy scans the image (Debian packages and Python wheels). It fails on a **critical vulnerability that has a fix**, and reports everything else in the job summary. The SBOM (`sbom.cdx.json`, CycloneDX: every package in the image with its version) and the full report are saved as the `image-scan` build artifact. Run the same scan locally with `make scan` |
