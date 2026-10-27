@@ -13,6 +13,10 @@ env:
   # them in lockstep. Pinned by digest: see scripts/pin_images.py.
   PROMETHEUS_IMAGE: prom/prometheus:v2.54.1@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94
   ALERTMANAGER_IMAGE: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
+  # Image scanner. 0.69.4-0.69.6 were a supply-chain compromise (GHSA-69fq-xp46-6x23), which
+  # is exactly why this is pinned by digest. Dependabot does not read workflow env, so bump
+  # it by hand: change the tag, drop the digest, `make pin-images`.
+  TRIVY_IMAGE: aquasec/trivy:0.69.3
 
 jobs:
   lint:
@@ -94,6 +98,40 @@ jobs:
             -e PULSEWATCH_SCHEDULER_ENABLED=false pulsewatch:ci
           for i in $(seq 1 20); do curl -fs localhost:8000/healthz && exit 0; sleep 1; done
           docker logs pw; exit 1
+
+  image-scan:
+    # Image security: Trivy scans the built image (Debian packages and Python wheels). The
+    # build fails on a CRITICAL vulnerability that has a fix (scripts/trivy_gate.py); every
+    # other finding is reported. The SBOM (CycloneDX: every package in the image, with
+    # versions) and the full report are kept as a build artifact.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: test
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - run: docker build -t pulsewatch:ci .
+      - name: Scan the image and write the SBOM
+        run: |
+          mkdir -p scan
+          trivy() { docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/trivy -v "$PWD/scan:/scan" "$TRIVY_IMAGE" "$@"; }
+          # One vulnerability DB download, reused by the three passes below.
+          trivy image --download-db-only --no-progress
+          trivy image --skip-db-update --no-progress --scanners vuln \
+            --format json --output /scan/trivy.json pulsewatch:ci
+          trivy image --skip-db-update --no-progress --scanners vuln \
+            --format table --output /scan/trivy.txt pulsewatch:ci
+          trivy image --skip-db-update --no-progress \
+            --format cyclonedx --output /scan/sbom.cdx.json pulsewatch:ci
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); n=len(d.get("components") or []); assert n > 50, n; print(f"SBOM: {n} components")' scan/sbom.cdx.json
+      - name: Fail on fixable critical vulnerabilities
+        run: python3 scripts/trivy_gate.py scan/trivy.json --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: image-scan
+          path: scan/
+          if-no-files-found: error
 
   stack:
     # Brings up the full compose stack: Prometheus scrapes Pulsewatch, Grafana is provisioned,

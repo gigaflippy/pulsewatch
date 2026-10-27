@@ -17,7 +17,7 @@ CHAOS_HOST ?= example.com
 
 .PHONY: help kind-up kind-down k8s-apply k8s-wait k8s-validate k8s-forward k8s-status \
 	argocd-up argocd-install argocd-bootstrap argocd-wait argocd-status argocd-ui \
-	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade lock lock-upgrade pin-images \
+	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade lock lock-upgrade pin-images scan \
 	chaos-partition chaos-kill-region chaos-heal chaos-alerts
 
 help:
@@ -48,6 +48,8 @@ help:
 	@echo "make lock          regenerate requirements*.txt (pinned + hashed) from pyproject.toml"
 	@echo "make lock-upgrade  same, moving every pin to the newest version pyproject.toml allows"
 	@echo "make pin-images    pin any image referenced by tag only to its current digest (needs docker buildx)"
+	@echo "make scan          build the image, scan it with Trivy (same pinned version and policy as CI),"
+	@echo "                   write scan/sbom.cdx.json + scan/trivy.txt; fails on fixable criticals"
 
 kind-up:
 	@kind get clusters | grep -qx '$(CLUSTER)' || kind create cluster --config deploy/k8s/kind-config.yaml --name $(CLUSTER)
@@ -205,6 +207,19 @@ lock-upgrade:
 # the old @sha256:... part, then run this.
 pin-images:
 	python3 scripts/pin_images.py --write
+
+# Image scan, same as the CI image-scan job: Trivy pinned by digest (read from ci.yml so the
+# two never drift), the vulnerability DB cached in a Docker volume between runs.
+TRIVY_IMAGE = $(shell sed -n 's/^  TRIVY_IMAGE: //p' .github/workflows/ci.yml)
+TRIVY = docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+	-v pulsewatch-trivy-cache:/root/.cache/trivy -v "$(CURDIR)/scan:/scan" $(TRIVY_IMAGE)
+scan:
+	docker build -t $(IMAGE) .
+	mkdir -p scan
+	$(TRIVY) image --no-progress --scanners vuln --format json --output /scan/trivy.json $(IMAGE)
+	$(TRIVY) image --skip-db-update --no-progress --scanners vuln --format table --output /scan/trivy.txt $(IMAGE)
+	$(TRIVY) image --skip-db-update --no-progress --format cyclonedx --output /scan/sbom.cdx.json $(IMAGE)
+	python3 scripts/trivy_gate.py scan/trivy.json
 
 # Chaos experiments. Run against a kubectl/Terraform deploy of the multi-region overlay:
 # under Argo CD, self-heal reverts these patches within a minute (which is its own demo).
