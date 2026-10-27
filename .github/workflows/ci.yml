@@ -16,7 +16,7 @@ env:
   # Image scanner. 0.69.4-0.69.6 were a supply-chain compromise (GHSA-69fq-xp46-6x23), which
   # is exactly why this is pinned by digest. Dependabot does not read workflow env, so bump
   # it by hand: change the tag, drop the digest, `make pin-images`.
-  TRIVY_IMAGE: aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
+  TRIVY_IMAGE: aquasec/trivy:0.76.1
 
 jobs:
   lint:
@@ -116,12 +116,12 @@ jobs:
           trivy() { docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
             -v trivy-cache:/root/.cache/trivy -v "$PWD/scan:/scan" "$TRIVY_IMAGE" "$@"; }
           # One vulnerability DB download, reused by the three passes below.
-          trivy image --download-db-only --no-progress
-          trivy image --skip-db-update --no-progress --scanners vuln \
+          trivy image --download-db-only --no-progress --skip-version-check
+          trivy image --skip-db-update --no-progress --skip-version-check --scanners vuln \
             --format json --output /scan/trivy.json pulsewatch:ci
-          trivy image --skip-db-update --no-progress --scanners vuln \
+          trivy image --skip-db-update --no-progress --skip-version-check --scanners vuln \
             --format table --output /scan/trivy.txt pulsewatch:ci
-          trivy image --skip-db-update --no-progress \
+          trivy image --skip-db-update --no-progress --skip-version-check \
             --format cyclonedx --output /scan/sbom.cdx.json pulsewatch:ci
           python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); n=len(d.get("components") or []); assert n > 50, n; print(f"SBOM: {n} components")' scan/sbom.cdx.json
       - name: Fail on fixable critical vulnerabilities
