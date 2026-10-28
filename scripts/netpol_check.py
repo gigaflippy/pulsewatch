@@ -78,13 +78,15 @@ def checks_for(overlay: str) -> list[Check]:
     m = MONITORING_NS
     if overlay == "kind":
         a = m  # agent and monitoring share one namespace
+        # Not checked: agent -> Kubernetes API. On kind the API server listens on the node
+        # itself, and traffic from a pod to its own node is not subject to NetworkPolicy
+        # (kindnet, like most CNIs). The agent has no API token, so it can't use it.
         return [
             Check(a, "pulsewatch", "example.com", 443, True, "agent: DNS + public internet"),
             Check(a, "pulsewatch", svc(m, "prometheus"), 9090, False, "agent -> Prometheus"),
             Check(a, "pulsewatch", svc(m, "alertmanager"), 9093, False, "agent -> Alertmanager"),
             Check(a, "pulsewatch", svc(m, "grafana"), 3000, False, "agent -> Grafana"),
             Check(a, "pulsewatch", svc(m, "alert-sink"), 9095, False, "agent -> alert sink"),
-            Check(a, "pulsewatch", svc("default", "kubernetes"), 443, False, "agent -> k8s API"),
             Check(m, "alert-sink", svc(a, "pulsewatch"), 8000, False, "only Prometheus scrapes"),
             Check(m, "alert-sink", svc(m, "prometheus"), 9090, False, "sink has no egress"),
             Check(m, "alert-sink", "1.1.1.1", 443, False, "sink has no internet"),

@@ -259,9 +259,6 @@ def test_live_checks_agree_with_the_policies(overlay):
         src = _pod(c, check.client, check.namespace)
         if check.dest.startswith("svc/"):
             _, ns, name = check.dest.split("/")
-            if name == "kubernetes":
-                assert not check.allowed
-                continue
             dst: Pod | str = _pod(c, name, ns)
         else:
             dst = PUBLIC_IP  # example.com, 1.1.1.1

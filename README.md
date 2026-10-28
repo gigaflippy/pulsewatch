@@ -340,7 +340,7 @@ Every Pulsewatch namespace starts from a **default-deny** NetworkPolicy (`deploy
 | Alertmanager | alert sink :9095, public HTTPS | notifications (Telegram) |
 | Probe agent | DNS, public internet | probing targets |
 
-Nothing else flows: an agent can't reach Prometheus, Grafana, Alertmanager, the API server or another region's agent, and the alert sink can't connect anywhere. The probe agents' internet rule excludes private ranges, so to probe something on your LAN add its CIDR in `deploy/k8s/base/networkpolicy.yaml`. `kubectl port-forward` still works, since it doesn't go through the pod network.
+Nothing else flows: an agent can't reach Prometheus, Grafana, Alertmanager or another region's agent, and the alert sink can't connect anywhere. (Traffic from a pod to its own node is outside NetworkPolicy, and on kind the API server runs on the node, so that one stays reachable; the agent has no API token, `automountServiceAccountToken: false`.) The probe agents' internet rule excludes private ranges, so to probe something on your LAN add its CIDR in `deploy/k8s/base/networkpolicy.yaml`. `kubectl port-forward` still works, since it doesn't go through the pod network.
 
 kind's default CNI (kindnet) enforces NetworkPolicy, and CI proves it: the `kind` and `kind-multi-region` jobs run `make netpol-check` (`scripts/netpol_check.py`), which opens real connections from inside the pods. Forbidden paths must time out or be refused, the agent must still reach the internet, and a temporary allow rule must open one forbidden path and close it again when deleted, so "blocked" can't just mean "the network is broken". `tests/test_networkpolicy.py` checks the whole connection matrix statically as well.
 
