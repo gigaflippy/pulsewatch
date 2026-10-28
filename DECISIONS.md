@@ -116,3 +116,28 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 **Recommendation:** MIT, copyright "Georgi Georgiev". Answer with one word (MIT, Apache-2.0 or none) and the next run adds the file.
 
 **Georgi's answer:**
+
+---
+
+## D-005 — Publish the container image to GitHub's registry? (opened 2026-10-25)
+
+**Status:** open, waiting on Georgi. Roadmap item 7 builds everything else without it.
+
+**Context.** CI builds the Pulsewatch image on every push and then throws it away. The Kubernetes manifests load a locally built image into kind. Publishing the image to GitHub Container Registry (ghcr.io) is free for public images and needs no new account or secret: CI uses the built-in `GITHUB_TOKEN`. It is still publishing something public under your name, so it is your call.
+
+**Options.**
+
+1. **Publish on version tags only (recommended).**
+   - + Anyone can run `docker run ghcr.io/gigaflippy/pulsewatch:v0.2.0`. Manifests can point at a real versioned image. It shows a full build → scan → publish → deploy pipeline, which is what DevOps interviews ask about.
+   - − A public package appears on your profile. Old versions stay unless you delete them.
+2. **Publish on every merge to the default branch, plus tags.**
+   - + Always an up-to-date `latest` image.
+   - − Many more package versions to clean up. `latest` is a habit interviewers often criticise.
+3. **Don't publish.**
+   - + Nothing public beyond the source code.
+   - − The pipeline stops at "build", and anyone trying it must build the image themselves.
+
+**Recommendation:** Option 1. Answer "1", "2" or "no".
+
+**Georgi's answer:**
+

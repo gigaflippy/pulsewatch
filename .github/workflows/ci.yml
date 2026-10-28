@@ -8,16 +8,28 @@ on:
 permissions:
   contents: read
 
+env:
+  # Same images (and digests) as docker-compose.yml and deploy/k8s/monitoring; a test keeps
+  # them in lockstep. Pinned by digest: see scripts/pin_images.py.
+  PROMETHEUS_IMAGE: prom/prometheus:v2.54.1@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94
+  ALERTMANAGER_IMAGE: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
+  # Image scanner. 0.69.4-0.69.6 were a supply-chain compromise (GHSA-69fq-xp46-6x23), which
+  # is exactly why this is pinned by digest. Dependabot does not read workflow env, so bump
+  # it by hand: change the tag, drop the digest, `make pin-images`.
+  TRIVY_IMAGE: aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-      - run: pip install ruff
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install --require-hashes -r requirements-dev.txt
       - run: ruff check .
       - run: ruff format --check .
 
@@ -28,20 +40,56 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: pip install -e '.[dev]'
+          cache-dependency-path: requirements-dev.txt
+      # Exact versions and hashes from the lockfile; the project itself adds nothing new (--no-deps).
+      - run: pip install --require-hashes -r requirements-dev.txt
+      - run: pip install --no-deps --no-build-isolation -e .
       - run: pytest -q
+
+  pins:
+    # Reproducible builds: every pulled image is pinned by digest, and the hash-locked
+    # requirements files install cleanly and satisfy pyproject.toml.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - name: Images are pinned by digest
+        run: |
+          if python scripts/pin_images.py; then exit 0; fi
+          # Resolve the digests from the registry, so the fix can be committed as-is.
+          python scripts/pin_images.py --write | tee pins.txt
+          git --no-pager diff
+          python3 -c 'import sys; t=open(sys.argv[1]).read(); print("::error title=Unpinned images; pin them (make pin-images)::" + t.replace("%","%25").replace("\r","").replace("\n","%0A"))' pins.txt
+          exit 1
+      - name: Runtime lockfile alone satisfies the package (what the image installs)
+        run: |
+          python -m venv /tmp/rt && . /tmp/rt/bin/activate
+          pip install -q --require-hashes --only-binary=:all: -r requirements-build.txt
+          pip install -q --require-hashes --only-binary=:all: -r requirements.txt
+          pip install -q --no-deps --no-build-isolation .
+          pip check
+          python -c 'import pulsewatch.main, pulsewatch.alertsink'
+      - name: Dev lockfile satisfies the package and its dev extra
+        run: |
+          python -m venv /tmp/dev && . /tmp/dev/bin/activate
+          pip install -q --require-hashes --only-binary=:all: -r requirements-dev.txt
+          pip install -q --no-deps --no-build-isolation -e '.[dev]'
+          pip check
 
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: test
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - run: docker build -t pulsewatch:ci .
       - name: Smoke test
         run: |
@@ -50,6 +98,40 @@ jobs:
             -e PULSEWATCH_SCHEDULER_ENABLED=false pulsewatch:ci
           for i in $(seq 1 20); do curl -fs localhost:8000/healthz && exit 0; sleep 1; done
           docker logs pw; exit 1
+
+  image-scan:
+    # Image security: Trivy scans the built image (Debian packages and Python wheels). The
+    # build fails on a CRITICAL vulnerability that has a fix (scripts/trivy_gate.py); every
+    # other finding is reported. The SBOM (CycloneDX: every package in the image, with
+    # versions) and the full report are kept as a build artifact.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: test
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - run: docker build -t pulsewatch:ci .
+      - name: Scan the image and write the SBOM
+        run: |
+          mkdir -p scan
+          trivy() { docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v trivy-cache:/root/.cache/trivy -v "$PWD/scan:/scan" "$TRIVY_IMAGE" "$@"; }
+          # One vulnerability DB download, reused by the three passes below.
+          trivy image --download-db-only --no-progress --skip-version-check
+          trivy image --skip-db-update --no-progress --skip-version-check --scanners vuln \
+            --format json --output /scan/trivy.json pulsewatch:ci
+          trivy image --skip-db-update --no-progress --skip-version-check --scanners vuln \
+            --format table --output /scan/trivy.txt pulsewatch:ci
+          trivy image --skip-db-update --no-progress --skip-version-check \
+            --format cyclonedx --output /scan/sbom.cdx.json pulsewatch:ci
+          python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); n=len(d.get("components") or []); assert n > 50, n; print(f"SBOM: {n} components")' scan/sbom.cdx.json
+      - name: Fail on fixable critical vulnerabilities
+        run: python3 scripts/trivy_gate.py scan/trivy.json --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: image-scan
+          path: scan/
+          if-no-files-found: error
 
   stack:
     # Brings up the full compose stack: Prometheus scrapes Pulsewatch, Grafana is provisioned,
@@ -61,18 +143,18 @@ jobs:
       # One target that is always down, so TargetDown fires for real (see the fixture).
       PULSEWATCH_TARGETS: ./tests/fixtures/targets-alerting.yaml
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: promtool check + rule unit tests
         run: |
           promtool() { docker run --rm --entrypoint promtool -w /etc/prometheus \
-            -v "$PWD/deploy/prometheus:/etc/prometheus:ro" prom/prometheus:v2.54.1 "$@"; }
+            -v "$PWD/deploy/prometheus:/etc/prometheus:ro" "$PROMETHEUS_IMAGE" "$@"; }
           promtool check config /etc/prometheus/prometheus.yml
           promtool check config /etc/prometheus/prometheus-k8s.yml
           promtool test rules rules.test.yml
       - name: amtool check-config + routing tree
         run: |
           amtool() { docker run --rm --entrypoint amtool \
-            -v "$PWD/deploy/alertmanager:/etc/alertmanager:ro" prom/alertmanager:v0.27.0 "$@"; }
+            -v "$PWD/deploy/alertmanager:/etc/alertmanager:ro" "$ALERTMANAGER_IMAGE" "$@"; }
           amtool check-config /etc/alertmanager/alertmanager.yml
           routes() { amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml "$@"; }
           routes --verify.receivers=page  alertname=TargetDown severity=page target=api
@@ -86,7 +168,7 @@ jobs:
           # The Telegram variant, rendered by start.sh exactly as at runtime (fake values).
           docker run --rm --entrypoint /bin/sh -e TELEGRAM_BOT_TOKEN=123456:ci-fake-token \
             -e TELEGRAM_CHAT_ID=-100123 -e ALERTMANAGER_CHECK_ONLY=1 \
-            -v "$PWD/deploy/alertmanager:/etc/alertmanager:ro" prom/alertmanager:v0.27.0 /etc/alertmanager/start.sh
+            -v "$PWD/deploy/alertmanager:/etc/alertmanager:ro" "$ALERTMANAGER_IMAGE" /etc/alertmanager/start.sh
       - run: docker compose up -d --build
       - name: Prometheus scrapes Pulsewatch and Alertmanager
         run: |
@@ -182,7 +264,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Install kubeconform
         run: |
           curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
@@ -203,8 +285,8 @@ jobs:
     timeout-minutes: 30
     needs: [test, k8s-manifests]
     steps:
-      - uses: actions/checkout@v5
-      - uses: helm/kind-action@v1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           cluster_name: pulsewatch
           config: deploy/k8s/kind-config.yaml
@@ -261,6 +343,8 @@ jobs:
             curl -fs 'localhost:9095/notifications?receiver=page' | grep -q PulsewatchTestAlert && break; sleep 3
           done
           make alerts-inbox | grep 'page firing PulsewatchTestAlert alerts-test'
+      - name: "NetworkPolicy: forbidden paths are blocked, and a control rule opens and closes one"
+        run: make netpol-check
       - name: Telegram switches on from a local Secret and off again (fake token, nothing sent)
         run: |
           make alerts-telegram TELEGRAM_BOT_TOKEN=123456:ci-fake-token TELEGRAM_CHAT_ID=-100123 | tee tg.log
@@ -275,6 +359,8 @@ jobs:
           # Emitted as annotations so they're readable from the PR checks page and the API.
           annotate() { python3 -c 'import sys; t=sys.stdin.read()[-12000:]; print("::error title=" + sys.argv[1] + "::" + t.replace("%","%25").replace("\r","").replace("\n","%0A"))' "$1"; }
           kubectl -n pulsewatch get all,pvc,cm 2>&1 | annotate "kubectl get"
+          { kubectl version 2>&1; kubectl get networkpolicy -A 2>&1; kubectl -n kube-system get pods -o wide 2>&1; \
+            kubectl -n kube-system logs -l app=kindnet --tail=40 2>&1; } | annotate "networkpolicy"
           kubectl -n pulsewatch get events --sort-by=.lastTimestamp 2>&1 | tail -40 | annotate "events"
           for d in pulsewatch prometheus grafana alertmanager alert-sink; do
             { kubectl -n pulsewatch get pods -l app.kubernetes.io/name=$d -o wide; \
@@ -288,8 +374,8 @@ jobs:
     timeout-minutes: 30
     needs: [test, k8s-manifests]
     steps:
-      - uses: actions/checkout@v5
-      - uses: helm/kind-action@v1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           cluster_name: pulsewatch
           config: deploy/k8s/kind-config.yaml
@@ -319,6 +405,8 @@ jobs:
             sleep 2
           done
           q 'up{job="pulsewatch"}'; q 'count by (region) (pulsewatch_up)'; exit 1
+      - name: "NetworkPolicy: regions are isolated from each other and from monitoring"
+        run: make netpol-check OVERLAY=deploy/k8s/overlays/multi-region
       - name: Diagnostics on failure
         if: failure()
         run: |
@@ -327,6 +415,7 @@ jobs:
           kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -40 | annotate "events"
           kubectl -n pulsewatch logs deploy/prometheus --tail=60 2>&1 | annotate "prometheus"
           kubectl -n pulsewatch-eu logs deploy/pulsewatch --tail=40 2>&1 | annotate "pulsewatch-eu"
+          { kubectl get networkpolicy -A 2>&1; kubectl -n kube-system logs -l app=kindnet --tail=40 2>&1; } | annotate "networkpolicy"
 
   chaos:
     # Chaos experiments on the multi-region stack, checked end to end (Prometheus rule ->
@@ -338,8 +427,8 @@ jobs:
     env:
       CHECK: python3 scripts/chaos_check.py --timeout 540
     steps:
-      - uses: actions/checkout@v5
-      - uses: helm/kind-action@v1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           cluster_name: pulsewatch
           config: deploy/k8s/kind-config.yaml
@@ -421,8 +510,8 @@ jobs:
       REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
       GITOPS_REPO: ${{ github.server_url }}/${{ github.event.pull_request.head.repo.full_name || github.repository }}.git
     steps:
-      - uses: actions/checkout@v5
-      - uses: helm/kind-action@v1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           cluster_name: pulsewatch
           config: deploy/k8s/kind-config.yaml
@@ -499,8 +588,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: "1.9.8"
           terraform_wrapper: false
@@ -524,12 +613,12 @@ jobs:
       run:
         working-directory: infra/terraform
     steps:
-      - uses: actions/checkout@v5
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: "1.9.8"
           terraform_wrapper: false
-      - uses: helm/kind-action@v1
+      - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
         with:
           install_only: true
       - run: terraform fmt -check -recursive -diff

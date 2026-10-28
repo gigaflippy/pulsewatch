@@ -4,6 +4,10 @@ namespace: pulsewatch
 resources:
   - namespace.yaml
   - ../../../monitoring
+
+# Default-deny NetworkPolicy for this namespace; the allow rules live with the workloads.
+components:
+  - ../../../components/default-deny
 images:
   # The alert sink runs from the Pulsewatch image, side-loaded like the probe agents.
   - name: pulsewatch

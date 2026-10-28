@@ -4,6 +4,10 @@ namespace: pulsewatch-eu
 resources:
   - namespace.yaml
   - ../../../base
+
+# Default-deny NetworkPolicy for this namespace; the allow rules live with the workloads.
+components:
+  - ../../../components/default-deny
 images:
   - name: pulsewatch
     newName: pulsewatch
