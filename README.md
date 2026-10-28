@@ -227,7 +227,7 @@ Three failure modes, each with a make target and an expected alert. They run aga
 
 `make chaos-heal` (with the same `CHAOS_NS`) undoes the partition and scales the agent back up. `make chaos-alerts` lists what Prometheus has pending and firing, and `make alerts-inbox` shows what was delivered. Change the region with `CHAOS_NS`, the host with `CHAOS_HOST`.
 
-The partition uses `/etc/hosts` instead of a NetworkPolicy, so it works the same on any CNI (kind's default included) and touches nothing outside one Deployment.
+The partition uses `/etc/hosts` instead of a NetworkPolicy, so it cuts one host off from one region and touches nothing outside one Deployment.
 
 **CI** (`chaos` job) runs all three on a fresh kind cluster and checks each one end to end with `scripts/chaos_check.py`. For every experiment it checks that the expected alert fires in Prometheus, reaches the right Alertmanager receiver in the alert sink, and that the alerts which must stay quiet do: no `TargetDown` and no budget burn during the partition, and the region warnings show as inhibited in Alertmanager's API while `ProbeAgentsAbsent` pages. Then it heals everything and waits for the meta alerts to clear.
 
@@ -329,6 +329,21 @@ The `image-scan` CI job scans the built image with [Trivy](https://trivy.dev) (D
 
 Trivy itself is pinned by digest. Its 0.69.4 to 0.69.6 images were briefly replaced with malicious ones in March 2026 ([GHSA-69fq-xp46-6x23](https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23)), which is the kind of thing a digest pin protects against.
 
+### Network isolation
+
+Every Pulsewatch namespace starts from a **default-deny** NetworkPolicy (`deploy/k8s/components/default-deny`, included by every overlay), and each workload gets only the connections it needs:
+
+| From | To | Why |
+|---|---|---|
+| Grafana | Prometheus :9090 | dashboards |
+| Prometheus | every probe agent :8000 (any namespace), Alertmanager :9093, the Kubernetes API | scraping, alerts, pod discovery |
+| Alertmanager | alert sink :9095, public HTTPS | notifications (Telegram) |
+| Probe agent | DNS, public internet | probing targets |
+
+Nothing else flows: an agent can't reach Prometheus, Grafana, Alertmanager, the API server or another region's agent, and the alert sink can't connect anywhere. The probe agents' internet rule excludes private ranges, so to probe something on your LAN add its CIDR in `deploy/k8s/base/networkpolicy.yaml`. `kubectl port-forward` still works, since it doesn't go through the pod network.
+
+kind's default CNI (kindnet) enforces NetworkPolicy, and CI proves it: the `kind` and `kind-multi-region` jobs run `make netpol-check` (`scripts/netpol_check.py`), which opens real connections from inside the pods. Forbidden paths must time out or be refused, the agent must still reach the internet, and a temporary allow rule must open one forbidden path and close it again when deleted, so "blocked" can't just mean "the network is broken". `tests/test_networkpolicy.py` checks the whole connection matrix statically as well.
+
 CI (GitHub Actions) runs lint, tests on Python 3.11 to 3.13, a Docker build with a smoke test, an image vulnerability scan with an SBOM, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
 
 ## How this was built
@@ -364,7 +379,7 @@ Nightly runs take these in order, one per night. A run skips ahead if an item is
 
 1. ~~**Reproducible builds:** pinned Python dependency lockfile with hashes, base images pinned by digest, Dependabot for pip, Docker, GitHub Actions and Terraform.~~ ✅
 2. ~~**Image scanning:** Trivy scan in CI that fails on fixable critical vulnerabilities, plus an SBOM (list of everything in the image) saved as a build artifact.~~ ✅
-3. **NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.
+3. ~~**NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.~~ ✅
 4. **Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.
 5. **Type checking and coverage:** mypy and a test-coverage report in CI.
 6. **Watching the watcher:** an always-firing Watchdog alert, and the alert sink reports when the heartbeat stops (Alertmanager or Prometheus down).

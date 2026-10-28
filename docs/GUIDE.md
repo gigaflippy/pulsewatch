@@ -173,8 +173,9 @@ deploy/                everything that runs the service
   prometheus/            rules.yml (all alerts), rules.test.yml (their tests), scrape configs
   alertmanager/          routing, Telegram variant, start.sh (chooses which one at start)
   grafana/               datasource + dashboard JSON
-  k8s/base/              the agent: Deployment, Service, PVC, targets
-  k8s/monitoring/        Prometheus, Alertmanager, alert sink, Grafana, RBAC
+  k8s/base/              the agent: Deployment, Service, PVC, NetworkPolicy, targets
+  k8s/monitoring/        Prometheus, Alertmanager, alert sink, Grafana, RBAC, NetworkPolicies
+  k8s/components/default-deny/  the default-deny NetworkPolicy every overlay namespace includes
   k8s/overlays/kind/           one region, everything in one namespace
   k8s/overlays/multi-region/   eu + us agents in their own namespaces, monitoring shared
   argocd/                Argo CD install (pinned) + the ApplicationSet that deploys the overlays
@@ -183,7 +184,8 @@ infra/terraform/       creates the kind cluster, loads the image, applies an ove
 scripts/chaos_check.py checks used by the chaos experiments
 scripts/pin_images.py  finds images referenced by tag only, and pins them by digest
 scripts/trivy_gate.py  image-scan policy: fail on fixable critical vulnerabilities, report the rest
-tests/                 145 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan
+scripts/netpol_check.py proves on a live cluster that the NetworkPolicies are enforced
+tests/                 163 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
 requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
 .github/workflows/     CI (13 jobs, section 7)
 .github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
@@ -199,7 +201,8 @@ When you change something, this table tells you where:
 | Watch a new website | `targets.yaml` (compose) or `deploy/k8s/base/targets.yaml` (Kubernetes) |
 | Change when an alert fires | `deploy/prometheus/rules.yml`, then add a case to `rules.test.yml` |
 | Change who gets notified | `deploy/alertmanager/alertmanager.yml` **and** `alertmanager-telegram.yml` (a test fails if they differ) |
-| Add a region | copy `deploy/k8s/overlays/multi-region/region-us/`, rename it, list it in the parent `kustomization.yaml` |
+| Add a region | copy `deploy/k8s/overlays/multi-region/region-us/`, rename it, list it in the parent `kustomization.yaml` (the copy keeps the default-deny component) |
+| Let a workload make a new connection | `deploy/k8s/base/networkpolicy.yaml` (agent) or `deploy/k8s/monitoring/networkpolicy.yaml`, plus the expected flows in `tests/test_networkpolicy.py`. Everything not allowed there is blocked |
 | Add an API endpoint | `src/pulsewatch/api.py` and `tests/test_api.py` |
 | Add or upgrade a Python dependency | `pyproject.toml`, then `make lock` (needs `pip install pip-tools`) and commit the `requirements*.txt` it changes |
 | Change an image version | the tag in `docker-compose.yml`, `deploy/k8s/monitoring/` and the `env:` block of `ci.yml` (a test keeps them equal). Delete the old `@sha256:…` and run `make pin-images` |
@@ -275,14 +278,14 @@ CI (`.github/workflows/ci.yml`) runs 13 jobs on every push. Most finish in 1 to 
 | Job | What it proves |
 |---|---|
 | `lint` | Code style (ruff, at the locked version) |
-| `test` | 145 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt` |
+| `test` | 163 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt` |
 | `pins` | Every image the repo pulls is pinned by digest (if not, the job prints the pinned refs to commit). The lockfiles install with `--require-hashes` and satisfy `pyproject.toml` (`pip check`) |
 | `docker` | The image builds and the container answers `/healthz` |
 | `image-scan` | Trivy scans the image (Debian packages and Python wheels). It fails on a **critical vulnerability that has a fix**, and reports everything else in the job summary. The SBOM (`sbom.cdx.json`, CycloneDX: every package in the image with its version) and the full report are saved as the `image-scan` build artifact. Run the same scan locally with `make scan` |
 | `stack` | The full compose stack runs. Alert rules pass their unit tests (`promtool test rules`). Routing goes to the right receiver (`amtool`). A target that is always down produces `TargetDown`, and it arrives in the `page` inbox |
 | `k8s-manifests` | Every overlay renders and is valid Kubernetes (kubeconform, strict) |
-| `kind` | One region on a real kind cluster: API, scrape, dashboard, results survive a pod restart, Telegram on/off with a fake token |
-| `kind-multi-region` | Two regions: Prometheus discovers both and sees two distinct `region` labels |
+| `kind` | One region on a real kind cluster: API, scrape, dashboard, results survive a pod restart, alert routing, Telegram on/off with a fake token. `make netpol-check`: forbidden connections are blocked from inside the pods, and a temporary allow rule opens one and closes it again (proof that the CNI enforces NetworkPolicy) |
+| `kind-multi-region` | Two regions: Prometheus discovers both and sees two distinct `region` labels across namespaces. `make netpol-check`: the agents can't reach each other or the monitoring stack |
 | `chaos` | All three chaos experiments: the right alert fires, reaches the right receiver, and the wrong alerts stay quiet |
 | `argocd` | Argo CD deploys the commit under test, all apps reach Synced/Healthy, and a deleted Deployment comes back by itself |
 | `terraform-lock` | The provider lockfile is complete for every platform |
@@ -301,6 +304,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 - **Prometheus data lives on an `emptyDir` in Kubernetes.** A Prometheus pod restart deletes the history, so the 7-day SLO numbers are then calculated from only the time since the restart. On a fresh cluster or after a restart, a short failure counts for a large share of that short history, and `ErrorBudgetBurnSlow` can warn early. A real setup uses a PersistentVolume.
 - **Nothing watches Alertmanager from outside.** If Alertmanager is down, no alert can reach you (section 4.2).
 - **Images are scanned when they are built, not afterwards.** A CVE published next week is only caught by the next CI run (Dependabot's weekly PRs trigger one). Production would also rescan the images that are deployed, on a schedule, or let the registry do it. Critical vulnerabilities with no fix yet pass the gate on purpose; they show up in the job summary.
+- **NetworkPolicies are by address and port, not by name.** The agent may reach any public address on any port (a target can be anywhere), and Prometheus reaches the Kubernetes API by port on private ranges, because the API server's address differs per cluster. Policies can't say "only api.telegram.org"; production would add an egress proxy or a CNI with DNS-aware policies (Cilium, Calico Enterprise).
 - **No authentication anywhere.** It is a local stack. Compose publishes every port on `127.0.0.1` only, and in Kubernetes you reach things through `kubectl port-forward`. Grafana's `admin/admin` is a local default.
 - **The image is side-loaded, not pulled.** `kind load` puts the image into the cluster directly, so no registry is needed. Argo CD therefore syncs manifests but not image versions.
 - **Reproducible, not bit-for-bit identical.** Every input is pinned (Python packages with hashes, base and monitoring images by digest, actions by commit SHA, Terraform providers by lockfile), but `apt` packages inside the base image and file timestamps are not, so two builds of the same commit give the same software, not the same image digest. Argo CD's own install manifests are pinned by version, not digest. Dependabot bumps `docker-compose.yml` on its own, so its PR for a monitoring image stays red until you copy the new ref into `deploy/k8s/monitoring/` and `ci.yml` on the same branch.
@@ -324,6 +328,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 - *Why Kustomize and not Helm?* There is one app with small differences per environment. Overlays express that directly, and kubectl and Argo CD support them with no extra tool.
 - *Is the build reproducible?* Every input is pinned: Python packages by version and hash (`requirements*.txt`, installed with `--require-hashes`, so a tampered or unlisted package fails the build), images by digest (a tag can be re-pushed; a digest can't), GitHub Actions by commit SHA, Terraform providers by lockfile. Dependabot opens a weekly PR per ecosystem, and CI decides whether it's safe. So nothing changes unless a reviewed PR changes it.
 - *How do you know the image is safe to ship?* CI scans every build with Trivy and fails on a critical vulnerability that has a fix. Lower severities and criticals with no fix yet are reported, not blocking, because a gate nobody can make green gets ignored. Each run keeps an SBOM (CycloneDX), so when a new CVE is announced you can check which builds contain the package without rebuilding anything.
+- *What can a compromised pod reach?* Very little. Every namespace is default-deny, and each workload has only the connections in the table in the README ("Network isolation"). A compromised probe agent can reach the internet (that is its job) but not Prometheus, Grafana, Alertmanager, the API server or another region. CI checks this on a real cluster, including a control that proves the CNI enforces the policies at all, because on a CNI that ignores NetworkPolicy the YAML would apply cleanly and do nothing.
 - *How do you keep secrets out of Git?* The Telegram token only exists on the owner's machine. It goes into a git-ignored `.env` or a Kubernetes Secret created from your shell, and Alertmanager reads it from a 0600 file, never from a config file.
 - *What would you change for production?* Real clusters per region, a registry with signed images, persistent Prometheus storage or remote-write, authentication in front of the UIs, and Postgres instead of SQLite.
 
