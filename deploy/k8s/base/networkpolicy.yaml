@@ -1,0 +1,56 @@
+# Probe agent: Prometheus may scrape it; it may resolve names and reach the public
+# internet (that is its job), nothing inside the cluster or on private networks.
+# kubectl port-forward and kubelet health checks are not pod traffic and still work.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pulsewatch
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pulsewatch
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        # Prometheus always runs in the "pulsewatch" namespace (both overlays).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pulsewatch
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - port: 8000
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Targets: any public address, any port. Private, link-local and carrier-grade NAT
+    # ranges are excluded, which also keeps the agent away from pods, Services and the
+    # node. To probe something on your LAN, add its CIDR here.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::1/128
+              - fc00::/7
+              - fe80::/10

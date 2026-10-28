@@ -18,7 +18,7 @@ CHAOS_HOST ?= example.com
 .PHONY: help kind-up kind-down k8s-apply k8s-wait k8s-validate k8s-forward k8s-status \
 	argocd-up argocd-install argocd-bootstrap argocd-wait argocd-status argocd-ui \
 	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade lock lock-upgrade pin-images scan \
-	chaos-partition chaos-kill-region chaos-heal chaos-alerts
+	chaos-partition chaos-kill-region chaos-heal chaos-alerts netpol-check
 
 help:
 	@echo "make kind-up       create kind cluster, build + load image, deploy, wait for rollout"
@@ -26,6 +26,8 @@ help:
 	@echo "make k8s-forward   port-forward API :8000, Prometheus :9090, Grafana :3000, Alertmanager :9093, sink :9095"
 	@echo "make k8s-status    show pods/services in the $(NS) namespace"
 	@echo "make k8s-validate  render manifests and schema-check them (kubectl + kubeconform)"
+	@echo "make netpol-check  prove the NetworkPolicies are enforced (blocked paths blocked, control"
+	@echo "                   rule opens and closes one); multi-region: add OVERLAY=... as for kind-up"
 	@echo "make kind-down     delete the kind cluster"
 	@echo ""
 	@echo "make argocd-up     GitOps: kind cluster + image, Argo CD, then Argo CD deploys the"
@@ -90,6 +92,10 @@ k8s-validate:
 	kubectl kustomize $(OVERLAY) | kubeconform -strict -summary -
 	promtool test rules deploy/prometheus/rules.test.yml
 	amtool check-config deploy/alertmanager/alertmanager.yml
+
+# NetworkPolicy enforcement, checked from inside the pods (same check as the CI kind jobs).
+netpol-check:
+	python3 scripts/netpol_check.py $(if $(findstring multi-region,$(OVERLAY)),multi-region,kind)
 
 kind-down:
 	kind delete cluster --name $(CLUSTER)
