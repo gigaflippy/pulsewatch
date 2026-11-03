@@ -116,7 +116,7 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 **Recommendation:** MIT, copyright "Georgi Georgiev". Answer with one word (MIT, Apache-2.0 or none) and the next run adds the file.
 
 **Georgi's answer:**
-
+## MIT (2026-11-03). I want people to be able to fork it and try it.
 ---
 
 ## D-005 — Publish the container image to GitHub's registry? (opened 2026-10-25)
@@ -140,4 +140,4 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 **Recommendation:** Option 1. Answer "1", "2" or "no".
 
 **Georgi's answer:**
-
+##1 (2026-11-03). Publish on version tags only. A versioned image is enough, I don't want a pile of latest builds.
