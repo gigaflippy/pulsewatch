@@ -27,7 +27,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: grafana
-          image: grafana/grafana-oss:11.2.2
+          image: grafana/grafana-oss:11.2.2@sha256:d5133220d770aba5cb655147b619fa8770b90f41d8489a821d33b1cd34d16f89
           env:
             # Same local-only defaults as docker-compose.yml: anonymous read-only viewing,
             # admin/admin for editing. Only reachable through kubectl port-forward.

@@ -9,7 +9,7 @@ variable "cluster_name" {
 variable "node_image" {
   description = "kind node image. Pinned so the cluster matches the kind CLI used by `kind load`."
   type        = string
-  default     = "kindest/node:v1.35.0"
+  default     = "kindest/node:v1.35.0@sha256:4613778f3cfcd10e615029370f5786704559103cf27bef934597ba562b269661"
 }
 
 variable "overlay" {

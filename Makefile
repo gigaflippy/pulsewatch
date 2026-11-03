@@ -17,7 +17,7 @@ CHAOS_HOST ?= example.com
 
 .PHONY: help kind-up kind-down k8s-apply k8s-wait k8s-validate k8s-forward k8s-status \
 	argocd-up argocd-install argocd-bootstrap argocd-wait argocd-status argocd-ui \
-	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade \
+	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade lock lock-upgrade pin-images \
 	chaos-partition chaos-kill-region chaos-heal chaos-alerts
 
 help:
@@ -44,6 +44,10 @@ help:
 	@echo ""
 	@echo "make tf-lock       add any missing provider checksums to infra/terraform/.terraform.lock.hcl"
 	@echo "make tf-upgrade    move the lockfile to the newest provider versions the constraints allow"
+	@echo ""
+	@echo "make lock          regenerate requirements*.txt (pinned + hashed) from pyproject.toml"
+	@echo "make lock-upgrade  same, moving every pin to the newest version pyproject.toml allows"
+	@echo "make pin-images    pin any image referenced by tag only to its current digest (needs docker buildx)"
 
 kind-up:
 	@kind get clusters | grep -qx '$(CLUSTER)' || kind create cluster --config deploy/k8s/kind-config.yaml --name $(CLUSTER)
@@ -179,6 +183,28 @@ tf-lock:
 tf-upgrade:
 	cd infra/terraform && terraform init -backend=false -upgrade -input=false >/dev/null
 	$(MAKE) tf-lock
+
+# Python lockfiles (pip-tools), every package pinned with its hashes:
+#   requirements.txt        runtime dependencies (what the image ships)
+#   requirements-build.txt  the build backend (hatchling), used only to build the image's wheel
+#   requirements-dev.txt    runtime + build + dev tools, constrained to the same versions
+# Existing pins are kept unless you run lock-upgrade. Dependabot (pip) regenerates them too.
+PIP_COMPILE = CUSTOM_COMPILE_COMMAND="make lock" pip-compile --quiet --generate-hashes \
+	--strip-extras --allow-unsafe --no-emit-index-url $(PIP_COMPILE_ARGS)
+lock:
+	$(PIP_COMPILE) -o requirements.txt pyproject.toml
+	$(PIP_COMPILE) --all-build-deps --only-build-deps -o requirements-build.txt pyproject.toml
+	$(PIP_COMPILE) --extra dev --all-build-deps -c requirements.txt -c requirements-build.txt \
+		-o requirements-dev.txt pyproject.toml
+
+lock-upgrade:
+	$(MAKE) lock PIP_COMPILE_ARGS=--upgrade
+
+# Container images: tag for humans, digest for what actually gets pulled. CI fails on a
+# tag-only reference and prints the pinned refs. To move a pin, change the tag and drop
+# the old @sha256:... part, then run this.
+pin-images:
+	python3 scripts/pin_images.py --write
 
 # Chaos experiments. Run against a kubectl/Terraform deploy of the multi-region overlay:
 # under Argo CD, self-heal reverts these patches within a minute (which is its own demo).

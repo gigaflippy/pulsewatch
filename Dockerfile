@@ -1,11 +1,18 @@
 # syntax=docker/dockerfile:1
-FROM python:3.13-slim AS build
+# Base image pinned by digest (scripts/pin_images.py); Dependabot moves tag and digest together.
+FROM python:3.13-slim@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962 AS build
 WORKDIR /src
+# Every dependency, and the hatchling build backend, comes from a hash-locked file:
+# a package that isn't listed, or whose hash doesn't match, fails the build.
+COPY requirements.txt requirements-build.txt ./
+RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements-build.txt \
+ && pip install --no-cache-dir --require-hashes --only-binary=:all: --prefix=/install -r requirements.txt
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir --prefix=/install .
+# --no-deps: nothing new is resolved here; --no-build-isolation: built with the locked hatchling.
+RUN pip install --no-cache-dir --no-deps --no-build-isolation --prefix=/install .
 
-FROM python:3.13-slim
+FROM python:3.13-slim@sha256:d98cc29d3266e535dd9da1099688d9cb3ca4753813571e071763d17725460962
 RUN useradd --create-home --uid 10001 pulsewatch && mkdir /data && chown pulsewatch /data
 COPY --from=build /install /usr/local
 USER pulsewatch
