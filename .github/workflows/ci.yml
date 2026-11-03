@@ -343,6 +343,8 @@ jobs:
             curl -fs 'localhost:9095/notifications?receiver=page' | grep -q PulsewatchTestAlert && break; sleep 3
           done
           make alerts-inbox | grep 'page firing PulsewatchTestAlert alerts-test'
+      - name: "NetworkPolicy: forbidden paths are blocked, and a control rule opens and closes one"
+        run: make netpol-check
       - name: Telegram switches on from a local Secret and off again (fake token, nothing sent)
         run: |
           make alerts-telegram TELEGRAM_BOT_TOKEN=123456:ci-fake-token TELEGRAM_CHAT_ID=-100123 | tee tg.log
@@ -357,6 +359,8 @@ jobs:
           # Emitted as annotations so they're readable from the PR checks page and the API.
           annotate() { python3 -c 'import sys; t=sys.stdin.read()[-12000:]; print("::error title=" + sys.argv[1] + "::" + t.replace("%","%25").replace("\r","").replace("\n","%0A"))' "$1"; }
           kubectl -n pulsewatch get all,pvc,cm 2>&1 | annotate "kubectl get"
+          { kubectl version 2>&1; kubectl get networkpolicy -A 2>&1; kubectl -n kube-system get pods -o wide 2>&1; \
+            kubectl -n kube-system logs -l app=kindnet --tail=40 2>&1; } | annotate "networkpolicy"
           kubectl -n pulsewatch get events --sort-by=.lastTimestamp 2>&1 | tail -40 | annotate "events"
           for d in pulsewatch prometheus grafana alertmanager alert-sink; do
             { kubectl -n pulsewatch get pods -l app.kubernetes.io/name=$d -o wide; \
@@ -401,6 +405,8 @@ jobs:
             sleep 2
           done
           q 'up{job="pulsewatch"}'; q 'count by (region) (pulsewatch_up)'; exit 1
+      - name: "NetworkPolicy: regions are isolated from each other and from monitoring"
+        run: make netpol-check OVERLAY=deploy/k8s/overlays/multi-region
       - name: Diagnostics on failure
         if: failure()
         run: |
@@ -409,6 +415,7 @@ jobs:
           kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -40 | annotate "events"
           kubectl -n pulsewatch logs deploy/prometheus --tail=60 2>&1 | annotate "prometheus"
           kubectl -n pulsewatch-eu logs deploy/pulsewatch --tail=40 2>&1 | annotate "pulsewatch-eu"
+          { kubectl get networkpolicy -A 2>&1; kubectl -n kube-system logs -l app=kindnet --tail=40 2>&1; } | annotate "networkpolicy"
 
   chaos:
     # Chaos experiments on the multi-region stack, checked end to end (Prometheus rule ->
