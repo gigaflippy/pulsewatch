@@ -140,4 +140,4 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 **Recommendation:** Option 1. Answer "1", "2" or "no".
 
 **Georgi's answer:**
-##1 (2026-11-03). Publish on version tags only. A versioned image is enough, I don't want a pile of latest builds.
+## 1 (2026-11-03). Publish on version tags only. A versioned image is enough, I don't want a pile of latest builds.
