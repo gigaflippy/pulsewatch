@@ -54,7 +54,7 @@ services:
     restart: unless-stopped
 
   grafana:
-    image: grafana/grafana-oss:11.2.2@sha256:d5133220d770aba5cb655147b619fa8770b90f41d8489a821d33b1cd34d16f89
+    image: grafana/grafana-oss:13.0.2@sha256:5dad0df181cb644a14e13617b913b261a54f7d4fd4510721dba420929f35bea2
     environment:
       # Local-only defaults: anonymous read-only viewing, admin/admin for editing.
       # Every port is published on 127.0.0.1 only, so other machines cannot reach these.
