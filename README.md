@@ -334,4 +334,17 @@ Beyond the original roadmap:
 - ~~Per-target availability SLOs: error-budget recording rules, multiwindow burn-rate alerts, dashboard row~~ ✅
 - ~~Chaos experiments (regional partition, lost region, all agents lost), CI-tested on kind, plus meta-monitoring alerts for lost probe agents~~ ✅
 - ~~Project guide with architecture diagrams ([docs/GUIDE.md](docs/GUIDE.md))~~ ✅
-- Next candidates: k6 load test of the API, a Helm chart.
+
+### This week (26 Oct – 1 Nov 2026)
+
+Nightly runs take these in order, one per night. A run skips ahead if an item is blocked on a decision.
+
+1. **Reproducible builds:** pinned Python dependency lockfile with hashes, base images pinned by digest, Dependabot for pip, Docker, GitHub Actions and Terraform.
+2. **Image scanning:** Trivy scan in CI that fails on fixable critical vulnerabilities, plus an SBOM (list of everything in the image) saved as a build artifact.
+3. **NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.
+4. **Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.
+5. **Type checking and coverage:** mypy and a test-coverage report in CI.
+6. **Watching the watcher:** an always-firing Watchdog alert, and the alert sink reports when the heartbeat stops (Alertmanager or Prometheus down).
+7. **Release pipeline:** on a `v*` tag, CI builds the image and creates a GitHub release with the SBOM. Pushing the image to a public registry waits on D-005.
+
+Later: k6 load test of the API, a Helm chart, TCP/DNS/TLS-expiry probes, logs with Loki.
