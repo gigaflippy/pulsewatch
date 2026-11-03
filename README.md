@@ -319,7 +319,17 @@ Every input to a build is pinned, so nothing changes unless a reviewed PR change
 - **Terraform:** providers come from the committed `.terraform.lock.hcl`.
 - **Dependabot** (`.github/dependabot.yml`) opens weekly PRs for pip, the Dockerfile, docker-compose, GitHub Actions and Terraform, and CI vets each one.
 
-CI (GitHub Actions) runs lint, tests on Python 3.11 to 3.13, a Docker build with a smoke test, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
+### Image scanning
+
+The `image-scan` CI job scans the built image with [Trivy](https://trivy.dev) (Debian packages and Python wheels) on every push:
+
+- **Fails** on a critical vulnerability that has a fix, because that one can be acted on now: a newer base-image digest or `make lock-upgrade`. Everything else (lower severities, criticals with no fix yet) is reported in the job summary but does not block. The policy lives in `scripts/trivy_gate.py`.
+- **SBOM:** `sbom.cdx.json` (CycloneDX) lists every package in the image with its version. It is kept, with the full vulnerability report, as the `image-scan` build artifact of each run.
+- **Locally:** `make scan` builds the image and runs the same scan (same pinned Trivy, same policy) into `scan/`.
+
+Trivy itself is pinned by digest. Its 0.69.4 to 0.69.6 images were briefly replaced with malicious ones in March 2026 ([GHSA-69fq-xp46-6x23](https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23)), which is the kind of thing a digest pin protects against.
+
+CI (GitHub Actions) runs lint, tests on Python 3.11 to 3.13, a Docker build with a smoke test, an image vulnerability scan with an SBOM, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
 
 ## How this was built
 
@@ -353,7 +363,7 @@ Beyond the original roadmap:
 Nightly runs take these in order, one per night. A run skips ahead if an item is blocked on a decision.
 
 1. ~~**Reproducible builds:** pinned Python dependency lockfile with hashes, base images pinned by digest, Dependabot for pip, Docker, GitHub Actions and Terraform.~~ ✅
-2. **Image scanning:** Trivy scan in CI that fails on fixable critical vulnerabilities, plus an SBOM (list of everything in the image) saved as a build artifact.
+2. ~~**Image scanning:** Trivy scan in CI that fails on fixable critical vulnerabilities, plus an SBOM (list of everything in the image) saved as a build artifact.~~ ✅
 3. **NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.
 4. **Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.
 5. **Type checking and coverage:** mypy and a test-coverage report in CI.
