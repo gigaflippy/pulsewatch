@@ -12,6 +12,13 @@ Standard library only: runs on a bare CI runner or a laptop next to `make k8s-fo
     chaos_check.py not-delivered warn ProbeRegionMissing region=eu-sim
     chaos_check.py wait-value 'count(count by (region) (pulsewatch_up))' 2
     chaos_check.py wait-inhibited ProbeRegionMissing region=eu-sim
+    chaos_check.py history-save 'pulsewatch:slo_error_ratio:5m' /tmp/slo.json
+    chaos_check.py history-check /tmp/slo.json      # after restarting Prometheus
+
+history-save waits until the series has a few samples, then records how many each series
+has in the last --window at that moment. history-check asks Prometheus the same question
+about the same moment and fails unless every count is still there: with an emptyDir the
+TSDB is gone after a restart and the answer is empty.
 
 PROMETHEUS_URL (default http://localhost:9090), ALERTMANAGER_URL (http://localhost:9093) and
 SINK_URL (http://localhost:9095) point at the port-forwarded services. `--timeout` goes
@@ -97,13 +104,41 @@ def inhibited(am_alerts: list[dict[str, Any]], alertname: str, want: dict[str, s
     )
 
 
+def history_query(promql: str, window: str) -> str:
+    if not WINDOW_RE.match(window):
+        raise ValueError(f"window must look like 10m, got {window!r}")
+    return f"count_over_time({promql}[{window}])"
+
+
+def series_key(metric: dict[str, str]) -> str:
+    """Stable name for one series: `{region="eu",target="api"}`."""
+    return "{" + ",".join(f"{k}={json.dumps(v)}" for k, v in sorted(metric.items())) + "}"
+
+
+def counts(result: list[dict[str, Any]]) -> dict[str, int]:
+    """Sample count per series from a count_over_time instant-query result."""
+    return {series_key(r["metric"]): int(float(r["value"][1])) for r in result}
+
+
+def history_missing(saved: dict[str, int], now: dict[str, int]) -> list[str]:
+    """Series whose samples (at the saved moment) are not all there any more."""
+    return [
+        f"{key}: had {n} samples, now {now.get(key, 0)}"
+        for key, n in sorted(saved.items())
+        if now.get(key, 0) < n
+    ]
+
+
 def _get_json(url: str) -> Any:
     with urllib.request.urlopen(url, timeout=10) as resp:
         return json.load(resp)
 
 
-def query(prometheus: str, promql: str) -> list[dict[str, Any]]:
-    url = f"{prometheus}/api/v1/query?" + urllib.parse.urlencode({"query": promql})
+def query(prometheus: str, promql: str, at: float | None = None) -> list[dict[str, Any]]:
+    params: dict[str, str] = {"query": promql}
+    if at is not None:
+        params["time"] = f"{at:.3f}"
+    url = f"{prometheus}/api/v1/query?" + urllib.parse.urlencode(params)
     body = _get_json(url)
     if body.get("status") != "success":
         raise RuntimeError(f"query failed: {promql}: {body}")
@@ -153,6 +188,13 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("wait-value")
     s.add_argument("promql")
     s.add_argument("expected", type=float)
+    s = sub.add_parser("history-save")
+    s.add_argument("promql")
+    s.add_argument("file")
+    s.add_argument("--window", default="10m")
+    s.add_argument("--min-samples", type=int, default=3)
+    s = sub.add_parser("history-check")
+    s.add_argument("file")
     args = p.parse_args(argv)
 
     prom = os.environ.get("PROMETHEUS_URL", "http://localhost:9090").rstrip("/")
@@ -198,6 +240,48 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"{'inhibited' if ok else 'NOT inhibited after timeout'}: {args.alertname} {labels}")
         return 0 if ok else 1
+    if args.cmd == "history-save":
+        q = history_query(args.promql, args.window)
+        snap: dict[str, Any] = {}
+
+        def check_history() -> bool:
+            result = query(prom, q)
+            got = counts(result)
+            if not got or min(got.values()) < args.min_samples:
+                return False
+            snap.update(query=q, time=float(result[0]["value"][0]), counts=got)
+            return True
+
+        ok = wait(check_history, args.timeout)
+        if not ok:
+            print(f"TIMEOUT: {q} never had {args.min_samples}+ samples per series")
+            return 1
+        with open(args.file, "w") as f:
+            json.dump(snap, f, indent=2, sort_keys=True)
+        print(f"saved {len(snap['counts'])} series at t={snap['time']:.0f}: {q} -> {args.file}")
+        return 0
+    if args.cmd == "history-check":
+        with open(args.file) as f:
+            snap = json.load(f)
+        missing: list[str] = list(snap["counts"])
+
+        def check_kept() -> bool:
+            missing[:] = history_missing(
+                snap["counts"], counts(query(prom, snap["query"], snap["time"]))
+            )
+            return not missing
+
+        ok = wait(check_kept, args.timeout)
+        if ok:
+            print(
+                f"kept: all {len(snap['counts'])} series still have "
+                f"their samples at t={snap['time']:.0f}"
+            )
+            return 0
+        print(f"LOST history at t={snap['time']:.0f} ({snap['query']}):")
+        for line in missing:
+            print(f"  {line}")
+        return 1
     # wait-value
     seen: list[str] = []
 

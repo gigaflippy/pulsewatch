@@ -181,11 +181,11 @@ deploy/                everything that runs the service
   argocd/                Argo CD install (pinned) + the ApplicationSet that deploys the overlays
 
 infra/terraform/       creates the kind cluster, loads the image, applies an overlay
-scripts/chaos_check.py checks used by the chaos experiments
+scripts/chaos_check.py checks used by the chaos experiments and the Prometheus restart check
 scripts/pin_images.py  finds images referenced by tag only, and pins them by digest; syncs image copies from docker-compose.yml
 scripts/trivy_gate.py  image-scan policy: fail on fixable critical vulnerabilities, report the rest
 scripts/netpol_check.py proves on a live cluster that the NetworkPolicies are enforced
-tests/                 165 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
+tests/                 169 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
 requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
 .github/workflows/     CI (13 jobs, section 7)
 .github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
@@ -285,7 +285,7 @@ CI (`.github/workflows/ci.yml`) runs 13 jobs on every push. Most finish in 1 to 
 | `image-scan` | Trivy scans the image (Debian packages and Python wheels). It fails on a **critical vulnerability that has a fix**, and reports everything else in the job summary. The SBOM (`sbom.cdx.json`, CycloneDX: every package in the image with its version) and the full report are saved as the `image-scan` build artifact. Run the same scan locally with `make scan` |
 | `stack` | The full compose stack runs. Alert rules pass their unit tests (`promtool test rules`). Routing goes to the right receiver (`amtool`). A target that is always down produces `TargetDown`, and it arrives in the `page` inbox |
 | `k8s-manifests` | Every overlay renders and is valid Kubernetes (kubeconform, strict) |
-| `kind` | One region on a real kind cluster: API, scrape, dashboard, results survive a pod restart, alert routing, Telegram on/off with a fake token. `make netpol-check`: forbidden connections are blocked from inside the pods, and a temporary allow rule opens one and closes it again (proof that the CNI enforces NetworkPolicy) |
+| `kind` | One region on a real kind cluster: API, scrape, dashboard, results survive a pod restart, the SLO history survives a Prometheus restart (the same samples are there for the same moment before and after), alert routing, Telegram on/off with a fake token. `make netpol-check`: forbidden connections are blocked from inside the pods, and a temporary allow rule opens one and closes it again (proof that the CNI enforces NetworkPolicy) |
 | `kind-multi-region` | Two regions: Prometheus discovers both and sees two distinct `region` labels across namespaces. `make netpol-check`: the agents can't reach each other or the monitoring stack |
 | `chaos` | All three chaos experiments: the right alert fires, reaches the right receiver, and the wrong alerts stay quiet |
 | `argocd` | Argo CD deploys the commit under test, all apps reach Synced/Healthy, and a deleted Deployment comes back by itself |
@@ -302,7 +302,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 
 - **The regions are simulated.** "eu-sim" and "us-sim" run on the same laptop, so they show the design (discovery, labels, consensus) and not real geographic diversity. Real regions are the same manifests on clusters in different places, with Prometheus federation or remote-write on top.
 - **SQLite allows one writer.** Each region therefore runs exactly one agent (`replicas: 1`, `strategy: Recreate`). You scale out by adding regions, not replicas. `storage.py` is the place to swap in Postgres.
-- **Prometheus data lives on an `emptyDir` in Kubernetes.** A Prometheus pod restart deletes the history, so the 7-day SLO numbers are then calculated from only the time since the restart. On a fresh cluster or after a restart, a short failure counts for a large share of that short history, and `ErrorBudgetBurnSlow` can warn early. A real setup uses a PersistentVolume.
+- **Prometheus keeps its data on one local volume.** The TSDB lives on a 2Gi PersistentVolumeClaim (`prometheus-data`), so a pod restart keeps the 7-day SLO history; CI restarts Prometheus and checks that it does. On kind the volume is a directory on the node (the `local-path` provisioner), so deleting the cluster still deletes the history, and a fresh cluster starts with a short history in which a short failure counts for a lot (`ErrorBudgetBurnSlow` can warn early). `--storage.tsdb.retention.size=1536MB` keeps it below the volume size. Production would use replicated storage, or remote-write to long-term storage (Thanos, Mimir), and run two Prometheus replicas.
 - **Nothing watches Alertmanager from outside.** If Alertmanager is down, no alert can reach you (section 4.2).
 - **Images are scanned when they are built, not afterwards.** A CVE published next week is only caught by the next CI run (Dependabot's weekly PRs trigger one). Production would also rescan the images that are deployed, on a schedule, or let the registry do it. Critical vulnerabilities with no fix yet pass the gate on purpose; they show up in the job summary.
 - **NetworkPolicies are by address and port, not by name.** The agent may reach any public address on any port (a target can be anywhere), and Prometheus reaches the Kubernetes API by port on private ranges, because the API server's address differs per cluster. Policies can't say "only api.telegram.org"; production would add an egress proxy or a CNI with DNS-aware policies (Cilium, Calico Enterprise). Traffic from a pod to its own node is outside NetworkPolicy, so on single-node kind every pod can still open a connection to the API server and the kubelet. Only Prometheus has an API token, and it can only read pods.
@@ -331,7 +331,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 - *How do you know the image is safe to ship?* CI scans every build with Trivy and fails on a critical vulnerability that has a fix. Lower severities and criticals with no fix yet are reported, not blocking, because a gate nobody can make green gets ignored. Each run keeps an SBOM (CycloneDX), so when a new CVE is announced you can check which builds contain the package without rebuilding anything.
 - *What can a compromised pod reach?* Very little. Every namespace is default-deny, and each workload has only the connections in the table in the README ("Network isolation"). A compromised probe agent can reach the internet (that is its job) but not Prometheus, Grafana, Alertmanager or another region, and it has no Kubernetes API token. CI checks this on a real cluster, including a control that proves the CNI enforces the policies at all, because on a CNI that ignores NetworkPolicy the YAML would apply cleanly and do nothing.
 - *How do you keep secrets out of Git?* The Telegram token only exists on the owner's machine. It goes into a git-ignored `.env` or a Kubernetes Secret created from your shell, and Alertmanager reads it from a 0600 file, never from a config file.
-- *What would you change for production?* Real clusters per region, a registry with signed images, persistent Prometheus storage or remote-write, authentication in front of the UIs, and Postgres instead of SQLite.
+- *What would you change for production?* Real clusters per region, a registry with signed images, replicated Prometheus storage or remote-write, authentication in front of the UIs, and Postgres instead of SQLite.
 
 ---
 
