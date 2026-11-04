@@ -16,9 +16,10 @@ Standard library only: runs on a bare CI runner or a laptop next to `make k8s-fo
     chaos_check.py history-check /tmp/slo.json      # after restarting Prometheus
 
 history-save waits until the series has a few samples, then records how many each series
-has in the last --window at that moment. history-check asks Prometheus the same question
-about the same moment and fails unless every count is still there: with an emptyDir the
-TSDB is gone after a restart and the answer is empty.
+has in the last --window at that moment. history-check first waits until it is talking to
+a Prometheus that started after that moment (so a stale port-forward to the old pod can't
+pass it), then asks the same question about the same moment and fails unless every count
+is still there: with an emptyDir the TSDB is gone after a restart and the answer is empty.
 
 PROMETHEUS_URL (default http://localhost:9090), ALERTMANAGER_URL (http://localhost:9093) and
 SINK_URL (http://localhost:9095) point at the port-forwarded services. `--timeout` goes
@@ -36,6 +37,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 LABEL_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)=(.*)$")
@@ -127,6 +129,24 @@ def history_missing(saved: dict[str, int], now: dict[str, int]) -> list[str]:
         for key, n in sorted(saved.items())
         if now.get(key, 0) < n
     ]
+
+
+def parse_go_time(value: str) -> float:
+    """Unix seconds from Go's RFC 3339 (nanoseconds, `Z` or an offset), as Prometheus writes it."""
+    m = re.fullmatch(r"(.+?T\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)", value)
+    if not m:
+        raise ValueError(f"not an RFC 3339 time: {value!r}")
+    base, frac, tz = m.groups()
+    stamp = datetime.fromisoformat(base + ("+00:00" if tz == "Z" else tz)).timestamp()
+    return stamp + (float("0." + frac) if frac else 0.0)
+
+
+def started_at(prometheus: str) -> float:
+    """When the Prometheus behind this URL started (GET /api/v1/status/runtimeinfo)."""
+    body = _get_json(f"{prometheus}/api/v1/status/runtimeinfo")
+    if body.get("status") != "success":
+        raise RuntimeError(f"runtimeinfo failed: {body}")
+    return parse_go_time(body["data"]["startTime"])
 
 
 def _get_json(url: str) -> Any:
@@ -264,6 +284,10 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.file) as f:
             snap = json.load(f)
         missing: list[str] = list(snap["counts"])
+        restarted = wait(lambda: started_at(prom) > snap["time"], args.timeout)
+        if not restarted:
+            print(f"NOT RESTARTED: Prometheus at {prom} started before t={snap['time']:.0f}")
+            return 1
 
         def check_kept() -> bool:
             missing[:] = history_missing(

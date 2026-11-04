@@ -122,6 +122,7 @@ class FakeServices:
         self.series: dict[str, list] = {}  # PromQL string -> result list
         self.queries: list[str] = []
         self.times: list[str | None] = []  # the ?time= of each query, None for "now"
+        self.start_time = "2023-11-14T22:13:20Z"  # what /api/v1/status/runtimeinfo reports
         self.inbox: list[dict] = []
         self.am_alerts: list[dict] = []
         fake = self
@@ -138,6 +139,8 @@ class FakeServices:
                     fake.queries.append(q)
                     fake.times.append(params.get("time", [None])[0])
                     body = {"status": "success", "data": {"result": fake.series.get(q, [])}}
+                elif url.path == "/api/v1/status/runtimeinfo":
+                    body = {"status": "success", "data": {"startTime": fake.start_time}}
                 elif url.path == "/notifications":
                     body = fake.inbox
                 elif url.path == "/api/v2/alerts":
@@ -325,9 +328,14 @@ def test_cli_history_survives_restart_or_not(fake, tmp_path, capsys):
     saved = json.loads(snap.read_text())
     assert saved == {"query": q, "time": 1700000123.5, "counts": {'{target="example"}': 40}}
 
+    # Still the old Prometheus (it started before the save): no verdict on the history.
+    capsys.readouterr()
+    assert cc.main(["--timeout", "0", "history-check", str(snap)]) == 1
+    assert "NOT RESTARTED" in capsys.readouterr().out
+    fake.start_time = "2023-11-14T22:17:00.123456789+00:00"  # restarted after the save
+
     # Prometheus restarted on an emptyDir: nothing at the saved moment.
     fake.series[q] = []
-    capsys.readouterr()
     assert cc.main(["--timeout", "0", "history-check", str(snap)]) == 1
     assert "LOST history at t=1700000124" in capsys.readouterr().out
     assert fake.times[-1] == "1700000123.500"  # asked about the saved moment, not "now"
@@ -336,3 +344,12 @@ def test_cli_history_survives_restart_or_not(fake, tmp_path, capsys):
     fake.series[q] = [{"metric": {"target": "example"}, "value": [1700000123.5, "40"]}]
     assert cc.main(["--timeout", "0", "history-check", str(snap)]) == 0
     assert "kept: all 1 series" in capsys.readouterr().out
+
+
+def test_parse_go_time():
+    assert cc.parse_go_time("2023-11-14T22:13:20Z") == 1700000000
+    assert cc.parse_go_time("2023-11-14T23:13:20.5+01:00") == 1700000000.5
+    # Go writes nanoseconds; datetime alone only takes microseconds.
+    assert abs(cc.parse_go_time("2023-11-14T22:13:20.123456789Z") - 1700000000.123456789) < 1e-6
+    with pytest.raises(ValueError):
+        cc.parse_go_time("yesterday")

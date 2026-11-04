@@ -185,7 +185,7 @@ scripts/chaos_check.py checks used by the chaos experiments and the Prometheus r
 scripts/pin_images.py  finds images referenced by tag only, and pins them by digest; syncs image copies from docker-compose.yml
 scripts/trivy_gate.py  image-scan policy: fail on fixable critical vulnerabilities, report the rest
 scripts/netpol_check.py proves on a live cluster that the NetworkPolicies are enforced
-tests/                 169 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
+tests/                 170 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
 requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
 .github/workflows/     CI (13 jobs, section 7)
 .github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
@@ -285,7 +285,7 @@ CI (`.github/workflows/ci.yml`) runs 13 jobs on every push. Most finish in 1 to 
 | `image-scan` | Trivy scans the image (Debian packages and Python wheels). It fails on a **critical vulnerability that has a fix**, and reports everything else in the job summary. The SBOM (`sbom.cdx.json`, CycloneDX: every package in the image with its version) and the full report are saved as the `image-scan` build artifact. Run the same scan locally with `make scan` |
 | `stack` | The full compose stack runs. Alert rules pass their unit tests (`promtool test rules`). Routing goes to the right receiver (`amtool`). A target that is always down produces `TargetDown`, and it arrives in the `page` inbox |
 | `k8s-manifests` | Every overlay renders and is valid Kubernetes (kubeconform, strict) |
-| `kind` | One region on a real kind cluster: API, scrape, dashboard, results survive a pod restart, the SLO history survives a Prometheus restart (the same samples are there for the same moment before and after), alert routing, Telegram on/off with a fake token. `make netpol-check`: forbidden connections are blocked from inside the pods, and a temporary allow rule opens one and closes it again (proof that the CNI enforces NetworkPolicy) |
+| `kind` | One region on a real kind cluster: API, scrape, dashboard, results survive a pod restart, the SLO history survives a Prometheus restart (once a newly started Prometheus answers, the same samples are there for the same moment as before), alert routing, Telegram on/off with a fake token. `make netpol-check`: forbidden connections are blocked from inside the pods, and a temporary allow rule opens one and closes it again (proof that the CNI enforces NetworkPolicy) |
 | `kind-multi-region` | Two regions: Prometheus discovers both and sees two distinct `region` labels across namespaces. `make netpol-check`: the agents can't reach each other or the monitoring stack |
 | `chaos` | All three chaos experiments: the right alert fires, reaches the right receiver, and the wrong alerts stay quiet |
 | `argocd` | Argo CD deploys the commit under test, all apps reach Synced/Healthy, and a deleted Deployment comes back by itself |
