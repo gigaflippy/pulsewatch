@@ -7,6 +7,8 @@
 
 # Pulsewatch
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Distributed uptime and latency monitor. Probes HTTP endpoints on a schedule, stores results, serves uptime/latency stats over a REST API, and exposes Prometheus metrics. It is built to run entirely on local infrastructure (Docker, local Kubernetes) at zero cost.
 
 > Status: **v0.1 core, Grafana, Kubernetes (kind), multi-region agents, Terraform, Argo CD GitOps, alert routing (Alertmanager, Telegram-ready), SLOs with error-budget burn-rate alerts, chaos experiments with meta-monitoring.** The original [roadmap](#roadmap) is complete; extras are listed under it.
@@ -356,6 +358,10 @@ Pulsewatch is built by Georgi Georgiev with [Claude](https://claude.com/claude-c
 
 The pull request history and DECISIONS.md show the work step by step.
 
+## License
+
+MIT, see [LICENSE](LICENSE). Copyright (c) 2026 Georgi Georgiev.
+
 ## Roadmap
 
 1. ~~**v0.1:** core probe service, REST API, Prometheus metrics, Docker, CI~~ ✅
@@ -383,6 +389,6 @@ Nightly runs take these in order, one per night. A run skips ahead if an item is
 4. **Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.
 5. **Type checking and coverage:** mypy and a test-coverage report in CI.
 6. **Watching the watcher:** an always-firing Watchdog alert, and the alert sink reports when the heartbeat stops (Alertmanager or Prometheus down).
-7. **Release pipeline:** on a `v*` tag, CI builds the image and creates a GitHub release with the SBOM. Pushing the image to a public registry waits on D-005.
+7. **Release pipeline:** on a `v*` tag, CI builds the image and creates a GitHub release with the SBOM. On the same tag the image goes to `ghcr.io/gigaflippy/pulsewatch` (version tags only, D-005).
 
 Later: k6 load test of the API, a Helm chart, TCP/DNS/TLS-expiry probes, logs with Loki.

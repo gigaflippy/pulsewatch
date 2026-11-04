@@ -192,6 +192,7 @@ requirements*.txt      hash-locked dependencies: runtime, build backend, dev (ma
 Makefile               every command you type: kind-up, argocd-up, chaos-*, alerts-*
 docker-compose.yml     the quickest way to run everything
 DECISIONS.md           the decisions you made, with options and reasons
+LICENSE                MIT (D-004)
 ```
 
 When you change something, this table tells you where:
