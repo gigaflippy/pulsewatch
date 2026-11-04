@@ -167,3 +167,41 @@ def test_dependabot_covers_every_pinned_ecosystem():
         ("terraform", "/infra/terraform"),
     }
     assert all(u["schedule"]["interval"] for u in cfg["updates"])
+
+
+def test_monitoring_images_have_copies_to_sync():
+    # The sync check is not vacuous: every compose image really has copies elsewhere.
+    refs = pin_images.scan()
+    sources = {pin_images._name(r.ref) for r in refs if r.path == pin_images.SOURCE}
+    copies = {pin_images._name(r.ref) for r in refs if r.path != pin_images.SOURCE}
+    assert {"prom/prometheus", "prom/alertmanager", "grafana/grafana-oss"} <= sources & copies
+
+
+def test_sync_copies_the_compose_ref_everywhere(tmp_path, monkeypatch, capsys):
+    old = "prom/alertmanager:v0.27.0" + DIGEST
+    new = "prom/alertmanager:v0.34.2@sha256:" + "b" * 64
+    (tmp_path / "docker-compose.yml").write_text(f"services:\n  am:\n    image: {new}\n")
+    (tmp_path / "deploy").mkdir()
+    (tmp_path / "deploy" / "am.yaml").write_text(
+        f"containers:\n  - image: {old}\n  - image: grafana/grafana-oss:11\n"
+    )
+    monkeypatch.setattr(pin_images, "ROOT", tmp_path)
+    real_scan = pin_images.scan
+    monkeypatch.setattr(pin_images, "scan", lambda: real_scan(tmp_path))
+
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    assert pin_images.main(["--check-sync"]) == 1
+    out = capsys.readouterr().out
+    assert "deploy/am.yaml:2:" in out and new in out and "make sync-images" in out
+
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    assert pin_images.main(["--check-sync"]) == 1
+    assert "::error file=deploy/am.yaml,line=2," in capsys.readouterr().out
+
+    assert pin_images.main(["--sync"]) == 0
+    text = (tmp_path / "deploy" / "am.yaml").read_text()
+    assert f"image: {new}\n" in text
+    assert "grafana/grafana-oss:11" in text  # not in compose: left alone
+    assert pin_images.main(["--check-sync"]) == 0
+    assert pin_images.main(["--sync"]) == 0  # idempotent
+    assert (tmp_path / "deploy" / "am.yaml").read_text() == text

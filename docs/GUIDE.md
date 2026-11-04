@@ -182,10 +182,10 @@ deploy/                everything that runs the service
 
 infra/terraform/       creates the kind cluster, loads the image, applies an overlay
 scripts/chaos_check.py checks used by the chaos experiments
-scripts/pin_images.py  finds images referenced by tag only, and pins them by digest
+scripts/pin_images.py  finds images referenced by tag only, and pins them by digest; syncs image copies from docker-compose.yml
 scripts/trivy_gate.py  image-scan policy: fail on fixable critical vulnerabilities, report the rest
 scripts/netpol_check.py proves on a live cluster that the NetworkPolicies are enforced
-tests/                 163 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
+tests/                 165 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
 requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
 .github/workflows/     CI (13 jobs, section 7)
 .github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
@@ -205,7 +205,8 @@ When you change something, this table tells you where:
 | Let a workload make a new connection | `deploy/k8s/base/networkpolicy.yaml` (agent) or `deploy/k8s/monitoring/networkpolicy.yaml`, plus the expected flows in `tests/test_networkpolicy.py`. Everything not allowed there is blocked |
 | Add an API endpoint | `src/pulsewatch/api.py` and `tests/test_api.py` |
 | Add or upgrade a Python dependency | `pyproject.toml`, then `make lock` (needs `pip install pip-tools`) and commit the `requirements*.txt` it changes |
-| Change an image version | the tag in `docker-compose.yml`, `deploy/k8s/monitoring/` and the `env:` block of `ci.yml` (a test keeps them equal). Delete the old `@sha256:…` and run `make pin-images` |
+| Change an image version | the tag in `docker-compose.yml` (the source of truth). Delete the old `@sha256:…`, run `make pin-images`, then `make sync-images` to copy the new ref into `deploy/k8s/monitoring/` and the `env:` block of `ci.yml` |
+| Take a Dependabot image PR | Dependabot only bumps `docker-compose.yml`, so the `pins` job fails with an annotation on each stale copy. Check out its branch (`gh pr checkout <n>`), run `make sync-images`, commit, push. Then the full CI (stack, kind, chaos) tests the new version |
 
 ---
 
@@ -279,7 +280,7 @@ CI (`.github/workflows/ci.yml`) runs 13 jobs on every push. Most finish in 1 to 
 |---|---|
 | `lint` | Code style (ruff, at the locked version) |
 | `test` | 163 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt` |
-| `pins` | Every image the repo pulls is pinned by digest (if not, the job prints the pinned refs to commit). The lockfiles install with `--require-hashes` and satisfy `pyproject.toml` (`pip check`) |
+| `pins` | Every image the repo pulls is pinned by digest (if not, the job prints the pinned refs to commit), and every copy of a `docker-compose.yml` image matches it (if not, an annotation on each stale line says to run `make sync-images`). The lockfiles install with `--require-hashes` and satisfy `pyproject.toml` (`pip check`) |
 | `docker` | The image builds and the container answers `/healthz` |
 | `image-scan` | Trivy scans the image (Debian packages and Python wheels). It fails on a **critical vulnerability that has a fix**, and reports everything else in the job summary. The SBOM (`sbom.cdx.json`, CycloneDX: every package in the image with its version) and the full report are saved as the `image-scan` build artifact. Run the same scan locally with `make scan` |
 | `stack` | The full compose stack runs. Alert rules pass their unit tests (`promtool test rules`). Routing goes to the right receiver (`amtool`). A target that is always down produces `TargetDown`, and it arrives in the `page` inbox |
@@ -307,7 +308,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 - **NetworkPolicies are by address and port, not by name.** The agent may reach any public address on any port (a target can be anywhere), and Prometheus reaches the Kubernetes API by port on private ranges, because the API server's address differs per cluster. Policies can't say "only api.telegram.org"; production would add an egress proxy or a CNI with DNS-aware policies (Cilium, Calico Enterprise). Traffic from a pod to its own node is outside NetworkPolicy, so on single-node kind every pod can still open a connection to the API server and the kubelet. Only Prometheus has an API token, and it can only read pods.
 - **No authentication anywhere.** It is a local stack. Compose publishes every port on `127.0.0.1` only, and in Kubernetes you reach things through `kubectl port-forward`. Grafana's `admin/admin` is a local default.
 - **The image is side-loaded, not pulled.** `kind load` puts the image into the cluster directly, so no registry is needed. Argo CD therefore syncs manifests but not image versions.
-- **Reproducible, not bit-for-bit identical.** Every input is pinned (Python packages with hashes, base and monitoring images by digest, actions by commit SHA, Terraform providers by lockfile), but `apt` packages inside the base image and file timestamps are not, so two builds of the same commit give the same software, not the same image digest. Argo CD's own install manifests are pinned by version, not digest. Dependabot bumps `docker-compose.yml` on its own, so its PR for a monitoring image stays red until you copy the new ref into `deploy/k8s/monitoring/` and `ci.yml` on the same branch.
+- **Reproducible, not bit-for-bit identical.** Every input is pinned (Python packages with hashes, base and monitoring images by digest, actions by commit SHA, Terraform providers by lockfile), but `apt` packages inside the base image and file timestamps are not, so two builds of the same commit give the same software, not the same image digest. Argo CD's own install manifests are pinned by version, not digest. Dependabot bumps `docker-compose.yml` on its own, so its PR for a monitoring image stays red until `make sync-images` copies the new ref into `deploy/k8s/monitoring/` and `ci.yml` on the same branch. The other route, letting Dependabot's Kubernetes support bump the manifests too, would open a second PR per image, and nothing updates the CI env copy, so one source plus a sync command is simpler.
 - **The version number is still `0.1.0`.** The code has grown a lot since then. Tag a release (for example `v1.0.0`) when you are happy with it.
 
 ---

@@ -18,9 +18,10 @@ updates:
     schedule:
       interval: weekly
 
-  # Prometheus, Alertmanager and Grafana in docker-compose.yml. The same refs live in
-  # deploy/k8s/monitoring and the CI env block; tests/test_k8s_manifests.py fails until all
-  # three match, so copy the new ref there on the Dependabot branch before merging.
+  # Prometheus, Alertmanager and Grafana in docker-compose.yml, the source of truth. Copies
+  # live in deploy/k8s/monitoring and the CI env block, which Dependabot can't update; the
+  # pins job fails with an annotation per stale line until `make sync-images` is committed
+  # on the Dependabot branch.
   - package-ecosystem: docker-compose
     directory: /
     schedule:

@@ -161,7 +161,8 @@ def test_compose_and_k8s_run_alertmanager_the_same_way():
     svc = _yaml(COMPOSE)["services"]["alertmanager"]
     dep = _k8s("Deployment", "alertmanager")
     [c] = dep["spec"]["template"]["spec"]["containers"]
-    assert c["image"] == svc["image"]
+    # Same image: tests/test_k8s_manifests.py::test_images_pinned_like_compose (one failure
+    # with the fix, not one per file).
     assert c["command"] == svc["entrypoint"] == ["/bin/sh", "/etc/alertmanager/start.sh"]
     assert c["args"] == svc["command"]
     mounts = {m["mountPath"]: m["name"] for m in c["volumeMounts"]}
