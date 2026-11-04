@@ -74,8 +74,7 @@ spec:
         # SLO windows reach 7 days, so the TSDB must outlive the pod (CI restarts Prometheus
         # and checks the history is still there). One writer: replicas 1 + Recreate.
         - name: data
-          persistentVolumeClaim:
-            claimName: prometheus-data
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
