@@ -132,16 +132,19 @@ def test_services_match_shared_config_hostnames():
 
 
 def test_images_pinned_like_compose():
-    # Dependabot bumps docker-compose.yml; the manifests and CI must follow on the same branch.
+    # Dependabot bumps docker-compose.yml only; the manifests and CI must follow on its branch.
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"]
     ci_env = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())["env"]
-    for name in ("prometheus", "grafana", "alertmanager"):
-        want = compose[name]["image"]
-        assert _container(_find("Deployment", name))["image"] == want, (
-            f"deploy/k8s/monitoring/{name}.yaml must use {want} like docker-compose.yml"
+    stale = [
+        f"{name}: {where} has {got}, docker-compose.yml has {compose[name]['image']}"
+        for name in ("prometheus", "grafana", "alertmanager")
+        for where, got in (
+            (f"deploy/k8s/monitoring/{name}.yaml", _container(_find("Deployment", name))["image"]),
+            ("ci.yml env", ci_env.get(f"{name.upper()}_IMAGE", compose[name]["image"])),
         )
-        if f"{name.upper()}_IMAGE" in ci_env:
-            assert ci_env[f"{name.upper()}_IMAGE"] == want, f"ci.yml env must use {want}"
+        if got != compose[name]["image"]
+    ]
+    assert not stale, "run `make sync-images` and commit:\n" + "\n".join(stale)
 
 
 def test_overlay_pins_local_image():
