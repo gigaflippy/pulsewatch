@@ -132,16 +132,19 @@ def test_services_match_shared_config_hostnames():
 
 
 def test_images_pinned_like_compose():
-    # Dependabot bumps docker-compose.yml; the manifests and CI must follow on the same branch.
+    # Dependabot bumps docker-compose.yml only; the manifests and CI must follow on its branch.
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())["services"]
     ci_env = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())["env"]
-    for name in ("prometheus", "grafana", "alertmanager"):
-        want = compose[name]["image"]
-        assert _container(_find("Deployment", name))["image"] == want, (
-            f"deploy/k8s/monitoring/{name}.yaml must use {want} like docker-compose.yml"
+    stale = [
+        f"{name}: {where} has {got}, docker-compose.yml has {compose[name]['image']}"
+        for name in ("prometheus", "grafana", "alertmanager")
+        for where, got in (
+            (f"deploy/k8s/monitoring/{name}.yaml", _container(_find("Deployment", name))["image"]),
+            ("ci.yml env", ci_env.get(f"{name.upper()}_IMAGE", compose[name]["image"])),
         )
-        if f"{name.upper()}_IMAGE" in ci_env:
-            assert ci_env[f"{name.upper()}_IMAGE"] == want, f"ci.yml env must use {want}"
+        if got != compose[name]["image"]
+    ]
+    assert not stale, "run `make sync-images` and commit:\n" + "\n".join(stale)
 
 
 def test_overlay_pins_local_image():
@@ -237,3 +240,47 @@ def test_multi_region_overlay():
     assert {d["metadata"]["namespace"] for d in monitoring} == {"pulsewatch"}
     [binding] = [d for d in docs if d["kind"] == "ClusterRoleBinding"]
     assert binding["subjects"][0]["namespace"] == "pulsewatch"
+
+
+def test_prometheus_tsdb_is_on_a_pvc_with_a_size_cap():
+    dep = _find("Deployment", "prometheus")
+    spec = dep["spec"]["template"]["spec"]
+    data = next(v for v in spec["volumes"] if v["name"] == "data")
+    assert "emptyDir" not in data
+    pvc = _find("PersistentVolumeClaim", data["persistentVolumeClaim"]["claimName"])
+    assert pvc["spec"]["accessModes"] == ["ReadWriteOnce"]
+    # One writer on a ReadWriteOnce volume: never two pods at once.
+    assert dep["spec"]["replicas"] == 1
+    assert dep["spec"]["strategy"]["type"] == "Recreate"
+    args = _container(dep)["args"]
+    assert "--storage.tsdb.path=/prometheus" in args
+    mounts = {m["name"]: m["mountPath"] for m in _container(dep)["volumeMounts"]}
+    assert mounts["data"] == "/prometheus"
+    # Retention by size stays below the volume, so a full disk drops old blocks, not writes.
+    [size] = [a.split("=", 1)[1] for a in args if a.startswith("--storage.tsdb.retention.size=")]
+    assert size.endswith("MB")
+    gib = int(pvc["spec"]["resources"]["requests"]["storage"].removesuffix("Gi"))
+    assert int(size.removesuffix("MB")) < gib * 1024
+    # Compose keeps the same retention and its own named volume.
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    prom = compose["services"]["prometheus"]
+    assert [a for a in prom["command"] if a.startswith("--storage.tsdb.retention")] == [
+        a for a in args if a.startswith("--storage.tsdb.retention")
+    ]
+    assert "prometheus-data:/prometheus" in prom["volumes"]
+    assert "prometheus-data" in compose["volumes"]
+
+
+def test_ci_proves_slo_history_survives_a_prometheus_restart():
+    ci = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())
+    steps = [s.get("run", "") for s in ci["jobs"]["kind"]["steps"]]
+    [run] = [r for r in steps if "history-check" in r]
+    order = [
+        "history-save 'pulsewatch:slo_error_ratio:5m'",
+        "rollout restart deployment/prometheus",
+        "rollout status deployment/prometheus",
+        "history-check",
+    ]
+    assert [run.index(x) for x in order] == sorted(run.index(x) for x in order)
+    rules = (ROOT / "deploy" / "prometheus" / "rules.yml").read_text()
+    assert "record: pulsewatch:slo_error_ratio:5m" in rules

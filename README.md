@@ -186,7 +186,7 @@ Needs `docker`, [`kind`](https://kind.sigs.k8s.io/) and `kubectl`. The image is 
 ```
 deploy/k8s/
   base/                 Pulsewatch Deployment, Service, PVC, targets ConfigMap (targets.yaml)
-  monitoring/           Prometheus, Alertmanager, alert sink, Grafana Deployments/Services
+  monitoring/           Prometheus (TSDB on a PVC), Alertmanager, alert sink, Grafana Deployments/Services
   overlays/kind/        single region: everything in one namespace, region=kind-local
   overlays/multi-region/ one namespace per region (eu-sim, us-sim) + shared monitoring namespace
   kind-config.yaml
@@ -200,9 +200,9 @@ deploy/alertmanager/    routing config, Telegram variant, start.sh; shared by co
 
 - **One config, two runtimes.** Compose and Kubernetes share the alert rules, Grafana provisioning and the dashboard. The only difference is scraping: compose scrapes `pulsewatch:8000`, while in-cluster Prometheus uses Kubernetes service discovery (`prometheus-k8s.yml`, with a read-only ClusterRole) to find every Pulsewatch pod in any namespace.
 - **Targets** for the cluster live in `deploy/k8s/base/targets.yaml`. The ConfigMap name carries a content hash, so editing the file and re-applying rolls out the pod automatically.
-- **Storage:** SQLite on a 1Gi PVC with `replicas: 1` and `strategy: Recreate`, so there is only ever one writer. You scale Pulsewatch by adding regions, not replicas (roadmap item 4).
+- **Storage:** SQLite on a 1Gi PVC with `replicas: 1` and `strategy: Recreate`, so there is only ever one writer. You scale Pulsewatch by adding regions, not replicas (roadmap item 4). Prometheus keeps its TSDB on a 2Gi PVC the same way (one replica, `Recreate`), with `--storage.tsdb.retention.size=1536MB` so it trims old data before the volume fills; compose uses a named volume, `prometheus-data`.
 - **Hardening:** every container runs non-root with a read-only root filesystem, all capabilities dropped, `RuntimeDefault` seccomp, no service-account token and memory limits.
-- **CI:** `k8s-manifests` renders the overlay and validates it with `kubeconform -strict` against Kubernetes 1.30. `kind` deploys the overlay to a real kind cluster and checks the API, the Prometheus scrape, the Grafana dashboard and datasource, and that results survive a pod restart.
+- **CI:** `k8s-manifests` renders the overlay and validates it with `kubeconform -strict` against Kubernetes 1.30. `kind` deploys the overlay to a real kind cluster and checks the API, the Prometheus scrape, the Grafana dashboard and datasource, and that results survive a pod restart, and that the SLO history survives a Prometheus restart (`chaos_check.py history-save` / `history-check`).
 
 ### Multi-region
 
@@ -314,7 +314,7 @@ To get exactly what CI and the image use, install from the hash-locked files ins
 Every input to a build is pinned, so nothing changes unless a reviewed PR changes it:
 
 - **Python:** `requirements.txt` (runtime), `requirements-build.txt` (hatchling) and `requirements-dev.txt` are pip-compile lockfiles with a hash for every package. The image and CI install with `--require-hashes`, so an unlisted or tampered package fails the build. After editing `pyproject.toml`, run `make lock` (needs `pip install pip-tools`).
-- **Images:** the base image and the Prometheus, Alertmanager, Grafana and kind node images are pinned by digest (`name:tag@sha256:…`). The `pins` CI job fails on a tag-only reference and prints the pinned ref; `make pin-images` does the same locally.
+- **Images:** the base image and the Prometheus, Alertmanager, Grafana and kind node images are pinned by digest (`name:tag@sha256:…`). The `pins` CI job fails on a tag-only reference and prints the pinned ref; `make pin-images` does the same locally. `docker-compose.yml` is the source of truth for the monitoring images: the `pins` job also fails when a copy in `deploy/k8s/monitoring/` or `ci.yml` differs from it, and `make sync-images` fixes that (the one step a Dependabot image PR needs).
 - **CI:** every GitHub Action is pinned to a commit SHA, with its version as a comment.
 - **Terraform:** providers come from the committed `.terraform.lock.hcl`.
 - **Dependabot** (`.github/dependabot.yml`) opens weekly PRs for pip, the Dockerfile, docker-compose, GitHub Actions and Terraform, and CI vets each one.
@@ -380,9 +380,9 @@ Nightly runs take these in order, one per night. A run skips ahead if an item is
 1. ~~**Reproducible builds:** pinned Python dependency lockfile with hashes, base images pinned by digest, Dependabot for pip, Docker, GitHub Actions and Terraform.~~ ✅
 2. ~~**Image scanning:** Trivy scan in CI that fails on fixable critical vulnerabilities, plus an SBOM (list of everything in the image) saved as a build artifact.~~ ✅
 3. ~~**NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.~~ ✅
-4. **Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.
+4. ~~**Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.~~ ✅
 5. **Type checking and coverage:** mypy and a test-coverage report in CI.
 6. **Watching the watcher:** an always-firing Watchdog alert, and the alert sink reports when the heartbeat stops (Alertmanager or Prometheus down).
 7. **Release pipeline:** on a `v*` tag, CI builds the image and creates a GitHub release with the SBOM. Pushing the image to a public registry waits on D-005.
 
-Later: k6 load test of the API, a Helm chart, TCP/DNS/TLS-expiry probes, logs with Loki.
+Later: k6 load test of the API, a Helm chart, TCP/DNS/TLS-expiry probes, logs with Loki. Major-version upgrades that Dependabot proposed, each in its own reviewed PR with CI proof: Prometheus v2 → v3 (#23; v3 changed config and UI defaults) and Grafana 11 → 13 (#24; two majors, dashboard and provisioning changes).

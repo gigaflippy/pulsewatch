@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 env:
-  # Same images (and digests) as docker-compose.yml and deploy/k8s/monitoring; a test keeps
-  # them in lockstep. Pinned by digest: see scripts/pin_images.py.
+  # Copies of the docker-compose.yml refs (the source of truth, which Dependabot bumps);
+  # `make sync-images` updates them and the pins job fails if they drift. See scripts/pin_images.py.
   PROMETHEUS_IMAGE: prom/prometheus:v2.54.1@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94
   ALERTMANAGER_IMAGE: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
   # Image scanner. 0.69.4-0.69.6 were a supply-chain compromise (GHSA-69fq-xp46-6x23), which
@@ -69,6 +69,10 @@ jobs:
           git --no-pager diff
           python3 -c 'import sys; t=open(sys.argv[1]).read(); print("::error title=Unpinned images; pin them (make pin-images)::" + t.replace("%","%25").replace("\r","").replace("\n","%0A"))' pins.txt
           exit 1
+      - name: Image copies match docker-compose.yml
+        # Fails on a Dependabot image PR until `make sync-images` is committed on its branch;
+        # the annotation sits on each stale line and names the ref it should be.
+        run: python scripts/pin_images.py --check-sync
       - name: Runtime lockfile alone satisfies the package (what the image installs)
         run: |
           python -m venv /tmp/rt && . /tmp/rt/bin/activate
@@ -332,6 +336,16 @@ jobs:
           after=$(curl -fs 'localhost:8000/targets/example/results?limit=1000' | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
           echo "results before=$before after=$after"
           test "$after" -ge "$before"
+      - name: SLO history survives a Prometheus restart (PVC)
+        run: |
+          # Count the SLO samples of the last 10m at one moment, restart Prometheus, then ask
+          # about the same moment again. On an emptyDir the answer would be empty.
+          python3 scripts/chaos_check.py --timeout 300 history-save 'pulsewatch:slo_error_ratio:5m' slo-history.json
+          kubectl -n pulsewatch rollout restart deployment/prometheus
+          kubectl -n pulsewatch rollout status deployment/prometheus --timeout=180s
+          pkill -f 'port-forward svc/prometheus' || true
+          kubectl -n pulsewatch port-forward svc/prometheus 9090:9090 >/dev/null 2>&1 &
+          python3 scripts/chaos_check.py --timeout 120 history-check slo-history.json
       - name: Alerts route through Alertmanager to the sink
         run: |
           for i in $(seq 1 30); do
