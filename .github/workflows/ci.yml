@@ -287,7 +287,7 @@ jobs:
     # Deploys the overlay to a throwaway kind cluster and checks the whole stack end to end.
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [test, k8s-manifests]
+    needs: [k8s-manifests]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
