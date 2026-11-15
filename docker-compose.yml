@@ -30,7 +30,7 @@ services:
     restart: unless-stopped
 
   alertmanager:
-    image: prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b
+    image: prom/alertmanager:v0.35.0@sha256:e638797febd034838eca8b98cdbd46f951e9bf7f178777aa8669167406a9946c
     # start.sh adds Telegram only when both variables are set (in a git-ignored .env).
     entrypoint: ["/bin/sh", "/etc/alertmanager/start.sh"]
     command: ["--storage.path=/alertmanager", "--cluster.listen-address="]
