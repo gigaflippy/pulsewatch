@@ -12,7 +12,7 @@ env:
   # Copies of the docker-compose.yml refs (the source of truth, which Dependabot bumps);
   # `make sync-images` updates them and the pins job fails if they drift. See scripts/pin_images.py.
   PROMETHEUS_IMAGE: prom/prometheus:v2.54.1@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94
-  ALERTMANAGER_IMAGE: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
+  ALERTMANAGER_IMAGE: prom/alertmanager:v0.34.2@sha256:39d8bb3966c694a124428a3a88fbcffd40bd069129ecd47c059f8a3f17c55f3b
   # Image scanner. 0.69.4-0.69.6 were a supply-chain compromise (GHSA-69fq-xp46-6x23), which
   # is exactly why this is pinned by digest. Dependabot does not read workflow env, so bump
   # it by hand: change the tag, drop the digest, `make pin-images`.
