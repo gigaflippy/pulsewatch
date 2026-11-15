@@ -1,0 +1,7 @@
+# Default-deny for a namespace: no pod may send or receive anything unless a
+# NetworkPolicy allows it. Every leaf overlay (one per namespace) includes this, and
+# deploy/k8s/base and deploy/k8s/monitoring carry the explicit allow rules.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - default-deny.yaml

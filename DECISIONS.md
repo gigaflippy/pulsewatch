@@ -97,7 +97,7 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 
 ## D-004 — Which licence for the repository? (opened 2026-10-24)
 
-**Status:** open, waiting on Georgi. Nothing else waits on this.
+**Status:** resolved: MIT (2026-11-03). `LICENSE` added on `nightly/2026-11-04-mit-license`.
 
 **Context.** The repository has no `LICENSE` file. On GitHub, that means "all rights reserved": people can read the code but are not allowed to copy, change or reuse it. For a portfolio project that is legal and fine, but visitors and recruiters often read a missing licence as "unfinished". Choosing a licence is a legal choice about your work, so it is yours. All options below are free.
 
@@ -115,13 +115,13 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 
 **Recommendation:** MIT, copyright "Georgi Georgiev". Answer with one word (MIT, Apache-2.0 or none) and the next run adds the file.
 
-**Georgi's answer:**
-## MIT (2026-11-03). I want people to be able to fork it and try it.
+**Georgi's answer:** MIT (2026-11-03). I want people to be able to fork it and try it.
+
 ---
 
 ## D-005 — Publish the container image to GitHub's registry? (opened 2026-10-25)
 
-**Status:** open, waiting on Georgi. Roadmap item 7 builds everything else without it.
+**Status:** resolved: Option 1, publish on version tags only (2026-11-03). Roadmap item 7 builds it.
 
 **Context.** CI builds the Pulsewatch image on every push and then throws it away. The Kubernetes manifests load a locally built image into kind. Publishing the image to GitHub Container Registry (ghcr.io) is free for public images and needs no new account or secret: CI uses the built-in `GITHUB_TOKEN`. It is still publishing something public under your name, so it is your call.
 
@@ -139,5 +139,4 @@ Open questions from nightly runs. Answer under **Georgi's answer** (one line is 
 
 **Recommendation:** Option 1. Answer "1", "2" or "no".
 
-**Georgi's answer:**
-## 1 (2026-11-03). Publish on version tags only. A versioned image is enough, I don't want a pile of latest builds.
+**Georgi's answer:** 1 (2026-11-03). Publish on version tags only. A versioned image is enough, I don't want a pile of latest builds.

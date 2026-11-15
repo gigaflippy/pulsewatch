@@ -1,4 +1,4 @@
-# Pulsewatch app: Deployment, Service, PVC and the targets ConfigMap.
+# Pulsewatch app: Deployment, Service, PVC, NetworkPolicy and the targets ConfigMap.
 # Namespace-agnostic; overlays set the namespace and image tag.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -12,6 +12,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - pvc.yaml
+  - networkpolicy.yaml
 
 configMapGenerator:
   # Hash-suffixed name, so editing targets.yaml rolls the Deployment automatically.

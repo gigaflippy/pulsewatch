@@ -17,8 +17,8 @@ CHAOS_HOST ?= example.com
 
 .PHONY: help kind-up kind-down k8s-apply k8s-wait k8s-validate k8s-forward k8s-status \
 	argocd-up argocd-install argocd-bootstrap argocd-wait argocd-status argocd-ui \
-	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade lock lock-upgrade pin-images \
-	chaos-partition chaos-kill-region chaos-heal chaos-alerts
+	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade lock lock-upgrade pin-images sync-images scan \
+	chaos-partition chaos-kill-region chaos-heal chaos-alerts netpol-check
 
 help:
 	@echo "make kind-up       create kind cluster, build + load image, deploy, wait for rollout"
@@ -26,6 +26,8 @@ help:
 	@echo "make k8s-forward   port-forward API :8000, Prometheus :9090, Grafana :3000, Alertmanager :9093, sink :9095"
 	@echo "make k8s-status    show pods/services in the $(NS) namespace"
 	@echo "make k8s-validate  render manifests and schema-check them (kubectl + kubeconform)"
+	@echo "make netpol-check  prove the NetworkPolicies are enforced (blocked paths blocked, control"
+	@echo "                   rule opens and closes one); multi-region: add OVERLAY=... as for kind-up"
 	@echo "make kind-down     delete the kind cluster"
 	@echo ""
 	@echo "make argocd-up     GitOps: kind cluster + image, Argo CD, then Argo CD deploys the"
@@ -48,6 +50,9 @@ help:
 	@echo "make lock          regenerate requirements*.txt (pinned + hashed) from pyproject.toml"
 	@echo "make lock-upgrade  same, moving every pin to the newest version pyproject.toml allows"
 	@echo "make pin-images    pin any image referenced by tag only to its current digest (needs docker buildx)"
+	@echo "make sync-images   copy the monitoring image refs from docker-compose.yml to k8s and CI (after a Dependabot bump)"
+	@echo "make scan          build the image, scan it with Trivy (same pinned version and policy as CI),"
+	@echo "                   write scan/sbom.cdx.json + scan/trivy.txt; fails on fixable criticals"
 
 kind-up:
 	@kind get clusters | grep -qx '$(CLUSTER)' || kind create cluster --config deploy/k8s/kind-config.yaml --name $(CLUSTER)
@@ -88,6 +93,10 @@ k8s-validate:
 	kubectl kustomize $(OVERLAY) | kubeconform -strict -summary -
 	promtool test rules deploy/prometheus/rules.test.yml
 	amtool check-config deploy/alertmanager/alertmanager.yml
+
+# NetworkPolicy enforcement, checked from inside the pods (same check as the CI kind jobs).
+netpol-check:
+	python3 scripts/netpol_check.py $(if $(findstring multi-region,$(OVERLAY)),multi-region,kind)
 
 kind-down:
 	kind delete cluster --name $(CLUSTER)
@@ -205,6 +214,25 @@ lock-upgrade:
 # the old @sha256:... part, then run this.
 pin-images:
 	python3 scripts/pin_images.py --write
+
+# docker-compose.yml is the source of truth for the monitoring images (Dependabot bumps it).
+# This copies its refs into deploy/k8s/monitoring/ and the CI env block. On a Dependabot
+# image PR: check out the branch, run this, commit, push.
+sync-images:
+	python3 scripts/pin_images.py --sync
+
+# Image scan, same as the CI image-scan job: Trivy pinned by digest (read from ci.yml so the
+# two never drift), the vulnerability DB cached in a Docker volume between runs.
+TRIVY_IMAGE = $(shell sed -n 's/^  TRIVY_IMAGE: //p' .github/workflows/ci.yml)
+TRIVY = docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+	-v pulsewatch-trivy-cache:/root/.cache/trivy -v "$(CURDIR)/scan:/scan" $(TRIVY_IMAGE)
+scan:
+	docker build -t $(IMAGE) .
+	mkdir -p scan
+	$(TRIVY) image --no-progress --skip-version-check --scanners vuln --format json --output /scan/trivy.json $(IMAGE)
+	$(TRIVY) image --skip-db-update --no-progress --skip-version-check --scanners vuln --format table --output /scan/trivy.txt $(IMAGE)
+	$(TRIVY) image --skip-db-update --no-progress --skip-version-check --format cyclonedx --output /scan/sbom.cdx.json $(IMAGE)
+	python3 scripts/trivy_gate.py scan/trivy.json
 
 # Chaos experiments. Run against a kubectl/Terraform deploy of the multi-region overlay:
 # under Argo CD, self-heal reverts these patches within a minute (which is its own demo).

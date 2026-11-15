@@ -7,22 +7,24 @@ name = "pulsewatch"
 version = "0.1.0"
 description = "Distributed uptime and latency monitor with Prometheus metrics"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
-    "pydantic>=2.7",
-    "pydantic-settings>=2.3",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.2",
     "prometheus-client>=0.20",
     "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "ruff>=0.5",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "ruff>=0.17.4",
 ]
 
 [project.scripts]

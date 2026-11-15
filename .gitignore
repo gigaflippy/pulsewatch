@@ -9,3 +9,6 @@ build/
 *.db
 /targets.yaml
 .env
+
+# make scan output (Trivy report + SBOM)
+scan/

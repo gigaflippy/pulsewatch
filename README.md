@@ -7,6 +7,8 @@
 
 # Pulsewatch
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Distributed uptime and latency monitor. Probes HTTP endpoints on a schedule, stores results, serves uptime/latency stats over a REST API, and exposes Prometheus metrics. It is built to run entirely on local infrastructure (Docker, local Kubernetes) at zero cost.
 
 > Status: **v0.1 core, Grafana, Kubernetes (kind), multi-region agents, Terraform, Argo CD GitOps, alert routing (Alertmanager, Telegram-ready), SLOs with error-budget burn-rate alerts, chaos experiments with meta-monitoring.** The original [roadmap](#roadmap) is complete; extras are listed under it.
@@ -186,7 +188,7 @@ Needs `docker`, [`kind`](https://kind.sigs.k8s.io/) and `kubectl`. The image is 
 ```
 deploy/k8s/
   base/                 Pulsewatch Deployment, Service, PVC, targets ConfigMap (targets.yaml)
-  monitoring/           Prometheus, Alertmanager, alert sink, Grafana Deployments/Services
+  monitoring/           Prometheus (TSDB on a PVC), Alertmanager, alert sink, Grafana Deployments/Services
   overlays/kind/        single region: everything in one namespace, region=kind-local
   overlays/multi-region/ one namespace per region (eu-sim, us-sim) + shared monitoring namespace
   kind-config.yaml
@@ -200,9 +202,9 @@ deploy/alertmanager/    routing config, Telegram variant, start.sh; shared by co
 
 - **One config, two runtimes.** Compose and Kubernetes share the alert rules, Grafana provisioning and the dashboard. The only difference is scraping: compose scrapes `pulsewatch:8000`, while in-cluster Prometheus uses Kubernetes service discovery (`prometheus-k8s.yml`, with a read-only ClusterRole) to find every Pulsewatch pod in any namespace.
 - **Targets** for the cluster live in `deploy/k8s/base/targets.yaml`. The ConfigMap name carries a content hash, so editing the file and re-applying rolls out the pod automatically.
-- **Storage:** SQLite on a 1Gi PVC with `replicas: 1` and `strategy: Recreate`, so there is only ever one writer. You scale Pulsewatch by adding regions, not replicas (roadmap item 4).
+- **Storage:** SQLite on a 1Gi PVC with `replicas: 1` and `strategy: Recreate`, so there is only ever one writer. You scale Pulsewatch by adding regions, not replicas (roadmap item 4). Prometheus keeps its TSDB on a 2Gi PVC the same way (one replica, `Recreate`), with `--storage.tsdb.retention.size=1536MB` so it trims old data before the volume fills; compose uses a named volume, `prometheus-data`.
 - **Hardening:** every container runs non-root with a read-only root filesystem, all capabilities dropped, `RuntimeDefault` seccomp, no service-account token and memory limits.
-- **CI:** `k8s-manifests` renders the overlay and validates it with `kubeconform -strict` against Kubernetes 1.30. `kind` deploys the overlay to a real kind cluster and checks the API, the Prometheus scrape, the Grafana dashboard and datasource, and that results survive a pod restart.
+- **CI:** `k8s-manifests` renders the overlay and validates it with `kubeconform -strict` against Kubernetes 1.30. `kind` deploys the overlay to a real kind cluster and checks the API, the Prometheus scrape, the Grafana dashboard and datasource, and that results survive a pod restart, and that the SLO history survives a Prometheus restart (`chaos_check.py history-save` / `history-check`).
 
 ### Multi-region
 
@@ -227,7 +229,7 @@ Three failure modes, each with a make target and an expected alert. They run aga
 
 `make chaos-heal` (with the same `CHAOS_NS`) undoes the partition and scales the agent back up. `make chaos-alerts` lists what Prometheus has pending and firing, and `make alerts-inbox` shows what was delivered. Change the region with `CHAOS_NS`, the host with `CHAOS_HOST`.
 
-The partition uses `/etc/hosts` instead of a NetworkPolicy, so it works the same on any CNI (kind's default included) and touches nothing outside one Deployment.
+The partition uses `/etc/hosts` instead of a NetworkPolicy, so it cuts one host off from one region and touches nothing outside one Deployment.
 
 **CI** (`chaos` job) runs all three on a fresh kind cluster and checks each one end to end with `scripts/chaos_check.py`. For every experiment it checks that the expected alert fires in Prometheus, reaches the right Alertmanager receiver in the alert sink, and that the alerts which must stay quiet do: no `TargetDown` and no budget burn during the partition, and the region warnings show as inhibited in Alertmanager's API while `ProbeAgentsAbsent` pages. Then it heals everything and waits for the meta alerts to clear.
 
@@ -314,12 +316,37 @@ To get exactly what CI and the image use, install from the hash-locked files ins
 Every input to a build is pinned, so nothing changes unless a reviewed PR changes it:
 
 - **Python:** `requirements.txt` (runtime), `requirements-build.txt` (hatchling) and `requirements-dev.txt` are pip-compile lockfiles with a hash for every package. The image and CI install with `--require-hashes`, so an unlisted or tampered package fails the build. After editing `pyproject.toml`, run `make lock` (needs `pip install pip-tools`).
-- **Images:** the base image and the Prometheus, Alertmanager, Grafana and kind node images are pinned by digest (`name:tag@sha256:…`). The `pins` CI job fails on a tag-only reference and prints the pinned ref; `make pin-images` does the same locally.
+- **Images:** the base image and the Prometheus, Alertmanager, Grafana and kind node images are pinned by digest (`name:tag@sha256:…`). The `pins` CI job fails on a tag-only reference and prints the pinned ref; `make pin-images` does the same locally. `docker-compose.yml` is the source of truth for the monitoring images: the `pins` job also fails when a copy in `deploy/k8s/monitoring/` or `ci.yml` differs from it, and `make sync-images` fixes that (the one step a Dependabot image PR needs).
 - **CI:** every GitHub Action is pinned to a commit SHA, with its version as a comment.
 - **Terraform:** providers come from the committed `.terraform.lock.hcl`.
 - **Dependabot** (`.github/dependabot.yml`) opens weekly PRs for pip, the Dockerfile, docker-compose, GitHub Actions and Terraform, and CI vets each one.
 
-CI (GitHub Actions) runs lint, tests on Python 3.11 to 3.13, a Docker build with a smoke test, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
+### Image scanning
+
+The `image-scan` CI job scans the built image with [Trivy](https://trivy.dev) (Debian packages and Python wheels) on every push:
+
+- **Fails** on a critical vulnerability that has a fix, because that one can be acted on now: a newer base-image digest or `make lock-upgrade`. Everything else (lower severities, criticals with no fix yet) is reported in the job summary but does not block. The policy lives in `scripts/trivy_gate.py`.
+- **SBOM:** `sbom.cdx.json` (CycloneDX) lists every package in the image with its version. It is kept, with the full vulnerability report, as the `image-scan` build artifact of each run.
+- **Locally:** `make scan` builds the image and runs the same scan (same pinned Trivy, same policy) into `scan/`.
+
+Trivy itself is pinned by digest. Its 0.69.4 to 0.69.6 images were briefly replaced with malicious ones in March 2026 ([GHSA-69fq-xp46-6x23](https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23)), which is the kind of thing a digest pin protects against.
+
+### Network isolation
+
+Every Pulsewatch namespace starts from a **default-deny** NetworkPolicy (`deploy/k8s/components/default-deny`, included by every overlay), and each workload gets only the connections it needs:
+
+| From | To | Why |
+|---|---|---|
+| Grafana | Prometheus :9090 | dashboards |
+| Prometheus | every probe agent :8000 (any namespace), Alertmanager :9093, the Kubernetes API | scraping, alerts, pod discovery |
+| Alertmanager | alert sink :9095, public HTTPS | notifications (Telegram) |
+| Probe agent | DNS, public internet | probing targets |
+
+Nothing else flows: an agent can't reach Prometheus, Grafana, Alertmanager or another region's agent, and the alert sink can't connect anywhere. (Traffic from a pod to its own node is outside NetworkPolicy, and on kind the API server runs on the node, so that one stays reachable; the agent has no API token, `automountServiceAccountToken: false`.) The probe agents' internet rule excludes private ranges, so to probe something on your LAN add its CIDR in `deploy/k8s/base/networkpolicy.yaml`. `kubectl port-forward` still works, since it doesn't go through the pod network.
+
+kind's default CNI (kindnet) enforces NetworkPolicy, and CI proves it: the `kind` and `kind-multi-region` jobs run `make netpol-check` (`scripts/netpol_check.py`), which opens real connections from inside the pods. Forbidden paths must time out or be refused, the agent must still reach the internet, and a temporary allow rule must open one forbidden path and close it again when deleted, so "blocked" can't just mean "the network is broken". `tests/test_networkpolicy.py` checks the whole connection matrix statically as well.
+
+CI (GitHub Actions) runs lint, tests on Python 3.11 to 3.13, a Docker build with a smoke test, an image vulnerability scan with an SBOM, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
 
 ## How this was built
 
@@ -330,6 +357,10 @@ Pulsewatch is built by Georgi Georgiev with [Claude](https://claude.com/claude-c
 - **Every change** passes the full CI suite before merge: lint, unit tests, rule tests, and real deployments to throwaway kind clusters.
 
 The pull request history and DECISIONS.md show the work step by step.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Copyright (c) 2026 Georgi Georgiev.
 
 ## Roadmap
 
@@ -353,11 +384,11 @@ Beyond the original roadmap:
 Nightly runs take these in order, one per night. A run skips ahead if an item is blocked on a decision.
 
 1. ~~**Reproducible builds:** pinned Python dependency lockfile with hashes, base images pinned by digest, Dependabot for pip, Docker, GitHub Actions and Terraform.~~ ✅
-2. **Image scanning:** Trivy scan in CI that fails on fixable critical vulnerabilities, plus an SBOM (list of everything in the image) saved as a build artifact.
-3. **NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.
-4. **Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.
+2. ~~**Image scanning:** Trivy scan in CI that fails on fixable critical vulnerabilities, plus an SBOM (list of everything in the image) saved as a build artifact.~~ ✅
+3. ~~**NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.~~ ✅
+4. ~~**Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.~~ ✅
 5. **Type checking and coverage:** mypy and a test-coverage report in CI.
 6. **Watching the watcher:** an always-firing Watchdog alert, and the alert sink reports when the heartbeat stops (Alertmanager or Prometheus down).
-7. **Release pipeline:** on a `v*` tag, CI builds the image and creates a GitHub release with the SBOM. Pushing the image to a public registry waits on D-005.
+7. **Release pipeline:** on a `v*` tag, CI builds the image and creates a GitHub release with the SBOM. On the same tag the image goes to `ghcr.io/gigaflippy/pulsewatch` (version tags only, D-005).
 
-Later: k6 load test of the API, a Helm chart, TCP/DNS/TLS-expiry probes, logs with Loki.
+Later: k6 load test of the API, a Helm chart, TCP/DNS/TLS-expiry probes, logs with Loki. Major-version upgrades that Dependabot proposed, each in its own reviewed PR with CI proof: Prometheus v2 → v3 (#23; v3 changed config and UI defaults) and Grafana 11 → 13 (#24; two majors, dashboard and provisioning changes).

@@ -11,6 +11,10 @@ resources:
   - ../../base
   - ../../monitoring
 
+# Default-deny NetworkPolicy for this namespace; the allow rules live with the workloads.
+components:
+  - ../../components/default-deny
+
 images:
   # Built locally and loaded with `kind load docker-image`; never pulled from a registry.
   - name: pulsewatch
