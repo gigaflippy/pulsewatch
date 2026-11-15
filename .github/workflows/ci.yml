@@ -361,12 +361,15 @@ jobs:
         run: make netpol-check
       - name: Telegram switches on from a local Secret and off again (fake token, nothing sent)
         run: |
+          # Both make targets restart Alertmanager until the newest pod reports the wanted
+          # mode (scripts/alertmanager_mode.py: the kubelet can briefly serve a stale Secret).
           make alerts-telegram TELEGRAM_BOT_TOKEN=123456:ci-fake-token TELEGRAM_CHAT_ID=-100123 | tee tg.log
           grep -q 'Telegram receiver enabled' tg.log
           # start.sh keeps the token out of Alertmanager's own environment.
-          test "$(kubectl -n pulsewatch exec deploy/alertmanager -- sh -c 'tr "\0" "\n" < /proc/1/environ | grep -c TELEGRAM_BOT_TOKEN || true')" = 0
-          make alerts-telegram-off
-          kubectl -n pulsewatch logs deploy/alertmanager | grep -q 'alert sink only'
+          pod=$(kubectl -n pulsewatch get pods -l app.kubernetes.io/name=alertmanager --sort-by=.metadata.creationTimestamp -o name | tail -n1)
+          test "$(kubectl -n pulsewatch exec "$pod" -- sh -c 'tr "\0" "\n" < /proc/1/environ | grep -c TELEGRAM_BOT_TOKEN || true')" = 0
+          make alerts-telegram-off | tee off.log
+          grep -q 'alert sink only' off.log
       - name: Diagnostics on failure
         if: failure()
         run: |

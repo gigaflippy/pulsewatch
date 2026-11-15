@@ -176,14 +176,11 @@ alerts-telegram:
 	  { echo "usage: make alerts-telegram TELEGRAM_BOT_TOKEN=<from @BotFather> TELEGRAM_CHAT_ID=<your chat id>"; exit 1; }
 	@printf 'apiVersion: v1\nkind: Secret\nmetadata:\n  name: alertmanager-telegram\n  namespace: %s\ntype: Opaque\nstringData:\n  bot_token: "%s"\n  chat_id: "%s"\n' \
 	  '$(NS)' "$$TELEGRAM_BOT_TOKEN" "$$TELEGRAM_CHAT_ID" | kubectl apply -f -
-	kubectl -n $(NS) rollout restart deployment/alertmanager
-	kubectl -n $(NS) rollout status deployment/alertmanager --timeout=120s
-	@kubectl -n $(NS) logs deploy/alertmanager | grep 'start.sh:'
+	python3 scripts/alertmanager_mode.py telegram -n $(NS)
 
 alerts-telegram-off:
 	kubectl -n $(NS) delete secret alertmanager-telegram --ignore-not-found
-	kubectl -n $(NS) rollout restart deployment/alertmanager
-	kubectl -n $(NS) rollout status deployment/alertmanager --timeout=120s
+	python3 scripts/alertmanager_mode.py sink -n $(NS)
 
 # Provider lockfile. CI runs tf-lock and fails if it changes the committed file.
 tf-lock:
