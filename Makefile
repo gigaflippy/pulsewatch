@@ -17,7 +17,7 @@ CHAOS_HOST ?= example.com
 
 .PHONY: help kind-up kind-down k8s-apply k8s-wait k8s-validate k8s-forward k8s-status \
 	argocd-up argocd-install argocd-bootstrap argocd-wait argocd-status argocd-ui \
-	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade lock lock-upgrade pin-images scan \
+	alerts-test alerts-inbox alerts-telegram alerts-telegram-off tf-lock tf-upgrade lock lock-upgrade pin-images sync-images scan \
 	chaos-partition chaos-kill-region chaos-heal chaos-alerts netpol-check
 
 help:
@@ -50,6 +50,7 @@ help:
 	@echo "make lock          regenerate requirements*.txt (pinned + hashed) from pyproject.toml"
 	@echo "make lock-upgrade  same, moving every pin to the newest version pyproject.toml allows"
 	@echo "make pin-images    pin any image referenced by tag only to its current digest (needs docker buildx)"
+	@echo "make sync-images   copy the monitoring image refs from docker-compose.yml to k8s and CI (after a Dependabot bump)"
 	@echo "make scan          build the image, scan it with Trivy (same pinned version and policy as CI),"
 	@echo "                   write scan/sbom.cdx.json + scan/trivy.txt; fails on fixable criticals"
 
@@ -213,6 +214,12 @@ lock-upgrade:
 # the old @sha256:... part, then run this.
 pin-images:
 	python3 scripts/pin_images.py --write
+
+# docker-compose.yml is the source of truth for the monitoring images (Dependabot bumps it).
+# This copies its refs into deploy/k8s/monitoring/ and the CI env block. On a Dependabot
+# image PR: check out the branch, run this, commit, push.
+sync-images:
+	python3 scripts/pin_images.py --sync
 
 # Image scan, same as the CI image-scan job: Trivy pinned by digest (read from ci.yml so the
 # two never drift), the vulnerability DB cached in a Docker volume between runs.
