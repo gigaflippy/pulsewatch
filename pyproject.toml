@@ -7,6 +7,8 @@ name = "pulsewatch"
 version = "0.1.0"
 description = "Distributed uptime and latency monitor with Prometheus metrics"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115",

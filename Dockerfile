@@ -7,7 +7,7 @@ WORKDIR /src
 COPY requirements.txt requirements-build.txt ./
 RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements-build.txt \
  && pip install --no-cache-dir --require-hashes --only-binary=:all: --prefix=/install -r requirements.txt
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 # --no-deps: nothing new is resolved here; --no-build-isolation: built with the locked hatchling.
 RUN pip install --no-cache-dir --no-deps --no-build-isolation --prefix=/install .
