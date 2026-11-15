@@ -18,8 +18,10 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=8d
+      - --storage.tsdb.retention.size=1536MB
     volumes:
       - ./deploy/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
     depends_on:
@@ -78,4 +80,5 @@ services:
 
 volumes:
   pulsewatch-data:
+  prometheus-data:
   grafana-data:

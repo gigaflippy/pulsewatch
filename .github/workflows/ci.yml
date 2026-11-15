@@ -336,6 +336,16 @@ jobs:
           after=$(curl -fs 'localhost:8000/targets/example/results?limit=1000' | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
           echo "results before=$before after=$after"
           test "$after" -ge "$before"
+      - name: SLO history survives a Prometheus restart (PVC)
+        run: |
+          # Count the SLO samples of the last 10m at one moment, restart Prometheus, then ask
+          # about the same moment again. On an emptyDir the answer would be empty.
+          python3 scripts/chaos_check.py --timeout 300 history-save 'pulsewatch:slo_error_ratio:5m' slo-history.json
+          kubectl -n pulsewatch rollout restart deployment/prometheus
+          kubectl -n pulsewatch rollout status deployment/prometheus --timeout=180s
+          pkill -f 'port-forward svc/prometheus' || true
+          kubectl -n pulsewatch port-forward svc/prometheus 9090:9090 >/dev/null 2>&1 &
+          python3 scripts/chaos_check.py --timeout 120 history-check slo-history.json
       - name: Alerts route through Alertmanager to the sink
         run: |
           for i in $(seq 1 30); do

@@ -121,6 +121,8 @@ class FakeServices:
     def __init__(self):
         self.series: dict[str, list] = {}  # PromQL string -> result list
         self.queries: list[str] = []
+        self.times: list[str | None] = []  # the ?time= of each query, None for "now"
+        self.start_time = "2023-11-14T22:13:20Z"  # what /api/v1/status/runtimeinfo reports
         self.inbox: list[dict] = []
         self.am_alerts: list[dict] = []
         fake = self
@@ -132,9 +134,13 @@ class FakeServices:
             def do_GET(self):
                 url = urlsplit(self.path)
                 if url.path == "/api/v1/query":
-                    q = parse_qs(url.query)["query"][0]
+                    params = parse_qs(url.query)
+                    q = params["query"][0]
                     fake.queries.append(q)
+                    fake.times.append(params.get("time", [None])[0])
                     body = {"status": "success", "data": {"result": fake.series.get(q, [])}}
+                elif url.path == "/api/v1/status/runtimeinfo":
+                    body = {"status": "success", "data": {"startTime": fake.start_time}}
                 elif url.path == "/notifications":
                     body = fake.inbox
                 elif url.path == "/api/v2/alerts":
@@ -283,3 +289,67 @@ def test_meta_alerts_cover_lost_agents():
     assert "absent(pulsewatch_up)" in alerts["ProbeAgentsAbsent"]["expr"]
     assert alerts["ProbeRegionMissing"]["labels"]["severity"] == "warn"
     assert "by (region)" in alerts["ProbeRegionMissing"]["expr"]
+
+
+def test_history_helpers():
+    assert cc.history_query("pulsewatch:slo_error_ratio:5m", "10m") == (
+        "count_over_time(pulsewatch:slo_error_ratio:5m[10m])"
+    )
+    with pytest.raises(ValueError):
+        cc.history_query("up", "10 minutes")
+    result = [
+        {"metric": {"target": "api", "region": "eu"}, "value": [1700000000.0, "12"]},
+        {"metric": {"region": "us", "target": "api"}, "value": [1700000000.0, "3"]},
+    ]
+    got = cc.counts(result)
+    assert got == {'{region="eu",target="api"}': 12, '{region="us",target="api"}': 3}
+    assert cc.history_missing(got, got) == []
+    assert cc.history_missing(got, {**got, '{region="eu",target="api"}': 13}) == []
+    # emptyDir after a restart: the old samples are simply gone.
+    assert cc.history_missing(got, {}) == [
+        '{region="eu",target="api"}: had 12 samples, now 0',
+        '{region="us",target="api"}: had 3 samples, now 0',
+    ]
+
+
+def test_cli_history_survives_restart_or_not(fake, tmp_path, capsys):
+    q = "count_over_time(pulsewatch:slo_error_ratio:5m[10m])"
+    snap = tmp_path / "slo.json"
+    series = [{"metric": {"target": "example"}, "value": [1700000123.5, "2"]}]
+    fake.series[q] = series
+    # Too few samples yet: history-save keeps waiting and times out.
+    assert (
+        cc.main(["--timeout", "0", "history-save", "pulsewatch:slo_error_ratio:5m", str(snap)]) == 1
+    )
+    series[0]["value"][1] = "40"
+    assert (
+        cc.main(["--timeout", "0", "history-save", "pulsewatch:slo_error_ratio:5m", str(snap)]) == 0
+    )
+    saved = json.loads(snap.read_text())
+    assert saved == {"query": q, "time": 1700000123.5, "counts": {'{target="example"}': 40}}
+
+    # Still the old Prometheus (it started before the save): no verdict on the history.
+    capsys.readouterr()
+    assert cc.main(["--timeout", "0", "history-check", str(snap)]) == 1
+    assert "NOT RESTARTED" in capsys.readouterr().out
+    fake.start_time = "2023-11-14T22:17:00.123456789+00:00"  # restarted after the save
+
+    # Prometheus restarted on an emptyDir: nothing at the saved moment.
+    fake.series[q] = []
+    assert cc.main(["--timeout", "0", "history-check", str(snap)]) == 1
+    assert "LOST history at t=1700000124" in capsys.readouterr().out
+    assert fake.times[-1] == "1700000123.500"  # asked about the saved moment, not "now"
+
+    # Restarted on the PVC: same answer for the same moment.
+    fake.series[q] = [{"metric": {"target": "example"}, "value": [1700000123.5, "40"]}]
+    assert cc.main(["--timeout", "0", "history-check", str(snap)]) == 0
+    assert "kept: all 1 series" in capsys.readouterr().out
+
+
+def test_parse_go_time():
+    assert cc.parse_go_time("2023-11-14T22:13:20Z") == 1700000000
+    assert cc.parse_go_time("2023-11-14T23:13:20.5+01:00") == 1700000000.5
+    # Go writes nanoseconds; datetime alone only takes microseconds.
+    assert abs(cc.parse_go_time("2023-11-14T22:13:20.123456789Z") - 1700000000.123456789) < 1e-6
+    with pytest.raises(ValueError):
+        cc.parse_go_time("yesterday")
