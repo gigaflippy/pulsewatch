@@ -8,14 +8,14 @@ policy that is too loose or too tight before anything is deployed, with no tooli
 
 from __future__ import annotations
 
-import importlib.util
 import ipaddress
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 import yaml
+
+from tests.helpers import load_script
 
 ROOT = Path(__file__).resolve().parent.parent
 K8S = ROOT / "deploy" / "k8s"
@@ -245,10 +245,7 @@ def test_prometheus_namespace_matches_agent_ingress():
 
 # --- scripts/netpol_check.py ----------------------------------------------------------
 
-_spec = importlib.util.spec_from_file_location("netpol_check", ROOT / "scripts/netpol_check.py")
-netpol = importlib.util.module_from_spec(_spec)
-sys.modules["netpol_check"] = netpol  # dataclasses look the module up while loading
-_spec.loader.exec_module(netpol)
+netpol = load_script("netpol_check")
 
 
 @pytest.mark.parametrize("overlay", ["kind", "multi-region"])
@@ -287,7 +284,7 @@ class FakeKubectl:
     def __call__(self, args: list[str], stdin: str | None) -> str:
         self.calls.append(args)
         if args[:1] == ["apply"]:
-            assert netpol.CONTROL_POLICY in stdin
+            assert stdin is not None and netpol.CONTROL_POLICY in stdin
             self.control = True
             return "created"
         if "delete" in args:

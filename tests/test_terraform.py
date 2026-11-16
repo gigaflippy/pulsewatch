@@ -11,6 +11,8 @@ from pathlib import Path
 
 import yaml
 
+from tests.helpers import group
+
 ROOT = Path(__file__).resolve().parent.parent
 TF = ROOT / "infra" / "terraform"
 OVERLAYS = ROOT / "deploy" / "k8s" / "overlays"
@@ -25,15 +27,15 @@ def _variable_block(name: str) -> str:
 
 def test_overlay_validation_lists_every_overlay():
     block = _variable_block("overlay")
-    allowed = set(re.findall(r'"([^"]+)"', re.search(r"contains\(\[(.*?)\]", block).group(1)))
+    allowed = set(re.findall(r'"([^"]+)"', group(r"contains\(\[(.*?)\]", block)))
     on_disk = {p.name for p in OVERLAYS.iterdir() if (p / "kustomization.yaml").exists()}
     assert allowed == on_disk
-    default = re.search(r'default\s*=\s*"([^"]+)"', block).group(1)
+    default = group(r'default\s*=\s*"([^"]+)"', block)
     assert default in on_disk
 
 
 def test_image_default_matches_overlay_pins():
-    default = re.search(r'default\s*=\s*"([^"]+)"', _variable_block("image")).group(1)
+    default = group(r'default\s*=\s*"([^"]+)"', _variable_block("image"))
     for k in OVERLAYS.rglob("kustomization.yaml"):
         for img in yaml.safe_load(k.read_text()).get("images", []):
             assert f"{img['newName']}:{img['newTag']}" == default, k
@@ -48,7 +50,7 @@ def test_state_and_kubeconfig_never_committed():
 def test_node_image_is_pinned():
     """Unpinned, the node image follows the provider's default, and a newer node broke
     `kind load` (containerd config version 4) without any change in this repo."""
-    default = re.search(r'default\s*=\s*"([^"]+)"', _variable_block("node_image")).group(1)
+    default = group(r'default\s*=\s*"([^"]+)"', _variable_block("node_image"))
     assert re.fullmatch(r"kindest/node:v\d+\.\d+\.\d+(@sha256:[0-9a-f]{64})?", default), default
     assert "node_image      = var.node_image" in (TF / "main.tf").read_text()
 
@@ -70,8 +72,8 @@ def _locked() -> dict[str, dict]:
     blocks = re.findall(r'provider "registry\.terraform\.io/([^"]+)" \{(.*?)\n\}', text, re.S)
     for src, body in blocks:
         out[src] = {
-            "version": re.search(r'^\s*version\s*=\s*"([^"]+)"', body, re.M).group(1),
-            "constraints": re.search(r'constraints\s*=\s*"([^"]+)"', body).group(1),
+            "version": group(r'^\s*version\s*=\s*"([^"]+)"', body, flags=re.M),
+            "constraints": group(r'constraints\s*=\s*"([^"]+)"', body),
             "hashes": re.findall(r'"((?:h1|zh):[^"]+)"', body),
         }
     return out
@@ -109,7 +111,7 @@ def test_lockfile_is_not_ignored_and_ci_enforces_it():
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
     assert "terraform init -input=false -lockfile=readonly" in ci
     assert "make tf-lock" in ci
-    platforms = re.search(r"TF_LOCK_PLATFORMS \?= (.+)", (ROOT / "Makefile").read_text()).group(1)
+    platforms = group(r"TF_LOCK_PLATFORMS \?= (.+)", (ROOT / "Makefile").read_text())
     assert {"linux_amd64", "darwin_arm64", "windows_amd64"} <= set(platforms.split())
 
 

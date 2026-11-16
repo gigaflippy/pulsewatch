@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
+from tests.helpers import load_script
+
 ROOT = Path(__file__).resolve().parent.parent
 
-_spec = importlib.util.spec_from_file_location("trivy_gate", ROOT / "scripts" / "trivy_gate.py")
-trivy_gate = importlib.util.module_from_spec(_spec)
-sys.modules["trivy_gate"] = trivy_gate  # dataclasses look the module up
-_spec.loader.exec_module(trivy_gate)
+trivy_gate = load_script("trivy_gate")
 
 
 def _vuln(vid, sev, fixed="", pkg="openssl", installed="3.0.1", title="bad thing"):

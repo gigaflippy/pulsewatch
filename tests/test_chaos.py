@@ -7,17 +7,19 @@ and cover scripts/chaos_check.py against a fake Prometheus / Alertmanager / aler
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
 import shlex
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
+
+from tests.helpers import load_script
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "chaos_check.py"
@@ -26,9 +28,7 @@ RULES = ROOT / "deploy" / "prometheus" / "rules.yml"
 MAKEFILE = ROOT / "Makefile"
 ALERTMANAGER = ROOT / "deploy" / "alertmanager" / "alertmanager.yml"
 
-spec = importlib.util.spec_from_file_location("chaos_check", SCRIPT)
-cc = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(cc)
+cc = load_script("chaos_check")
 
 
 def _alerts() -> dict[str, dict]:
@@ -133,6 +133,7 @@ class FakeServices:
 
             def do_GET(self):
                 url = urlsplit(self.path)
+                body: object
                 if url.path == "/api/v1/query":
                     params = parse_qs(url.query)
                     q = params["query"][0]
@@ -315,7 +316,7 @@ def test_history_helpers():
 def test_cli_history_survives_restart_or_not(fake, tmp_path, capsys):
     q = "count_over_time(pulsewatch:slo_error_ratio:5m[10m])"
     snap = tmp_path / "slo.json"
-    series = [{"metric": {"target": "example"}, "value": [1700000123.5, "2"]}]
+    series: list[dict[str, Any]] = [{"metric": {"target": "example"}, "value": [1700000123.5, "2"]}]
     fake.series[q] = series
     # Too few samples yet: history-save keeps waiting and times out.
     assert (

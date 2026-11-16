@@ -12,6 +12,7 @@ import re
 import shutil
 import stat
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -201,6 +202,20 @@ env > "$OUT/env"
 """
 
 
+class StartScript:
+    """Callable start.sh runner, plus where it wrote its output."""
+
+    def __init__(
+        self, run: Callable[..., subprocess.CompletedProcess[str]], tmp: Path, runtime: Path
+    ) -> None:
+        self._run = run
+        self.tmp = tmp
+        self.runtime = runtime
+
+    def __call__(self, **env: str) -> subprocess.CompletedProcess[str]:
+        return self._run(**env)
+
+
 @pytest.fixture
 def run_start(tmp_path):
     if not shutil.which("sh"):
@@ -210,7 +225,7 @@ def run_start(tmp_path):
     stub.chmod(0o755)
     runtime = tmp_path / "runtime"
 
-    def run(**env: str) -> subprocess.CompletedProcess:
+    def run(**env: str) -> subprocess.CompletedProcess[str]:
         full = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "OUT": str(tmp_path),
@@ -226,9 +241,7 @@ def run_start(tmp_path):
             text=True,
         )
 
-    run.tmp = tmp_path
-    run.runtime = runtime
-    return run
+    return StartScript(run, tmp=tmp_path, runtime=runtime)
 
 
 def test_start_without_credentials_uses_base_config(run_start):

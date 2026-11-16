@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import timedelta
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Response
@@ -19,7 +20,7 @@ from pulsewatch.scheduler import Scheduler
 from pulsewatch.storage import Storage
 
 
-def _result_dict(r: ProbeResult) -> dict:
+def _result_dict(r: ProbeResult) -> dict[str, Any]:
     d = asdict(r)
     d["timestamp"] = r.timestamp.isoformat()
     return d
@@ -67,15 +68,15 @@ def create_app(
         return by_name[name]
 
     @app.get("/healthz")
-    def healthz() -> dict:
+    def healthz() -> dict[str, str]:
         return {"status": "ok", "region": settings.region, "version": __version__}
 
     @app.get("/targets")
-    def list_targets() -> list[dict]:
+    def list_targets() -> list[dict[str, Any]]:
         return [t.model_dump(mode="json") for t in targets]
 
     @app.get("/status")
-    def status(window: int = Query(3600, ge=60, le=7 * 24 * 3600)) -> list[dict]:
+    def status(window: int = Query(3600, ge=60, le=7 * 24 * 3600)) -> list[dict[str, Any]]:
         out = []
         for t in targets:
             s = storage.stats(t.name, timedelta(seconds=window))
@@ -85,12 +86,12 @@ def create_app(
         return out
 
     @app.get("/targets/{name}/results")
-    def results(name: str, limit: int = Query(50, ge=1, le=1000)) -> list[dict]:
+    def results(name: str, limit: int = Query(50, ge=1, le=1000)) -> list[dict[str, Any]]:
         _get_target(name)
         return [_result_dict(r) for r in storage.recent(name, limit)]
 
     @app.post("/targets/{name}/check")
-    async def check_now(name: str) -> dict:
+    async def check_now(name: str) -> dict[str, Any]:
         """Run one probe immediately (useful for testing a target)."""
         target = _get_target(name)
         return _result_dict(await scheduler.run_once(target))

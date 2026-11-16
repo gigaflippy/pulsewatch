@@ -37,7 +37,7 @@ class Scheduler:
         self.retention = retention
         self._client = client
         self._owns_client = client is None
-        self._tasks: list[asyncio.Task] = []
+        self._tasks: list[asyncio.Task[None]] = []
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
