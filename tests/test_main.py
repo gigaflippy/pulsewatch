@@ -23,3 +23,6 @@ def test_run_builds_app_from_env_and_hands_off_to_uvicorn(tmp_path, monkeypatch)
     assert isinstance(captured["app"], FastAPI)
     assert captured["app"].title == "Pulsewatch"
     assert (captured["host"], captured["port"]) == ("127.0.0.1", 8123)
+    # create_app() opens its Storage directly; only the lifespan closes it, and the
+    # lifespan never runs since uvicorn.run is faked here instead of actually serving.
+    captured["app"].state.storage.close()
