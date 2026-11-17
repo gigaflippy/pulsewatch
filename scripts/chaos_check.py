@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
 LABEL_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)=(.*)$")
 WINDOW_RE = re.compile(r"^\d+[smh]$")
@@ -162,11 +162,19 @@ def query(prometheus: str, promql: str, at: float | None = None) -> list[dict[st
     body = _get_json(url)
     if body.get("status") != "success":
         raise RuntimeError(f"query failed: {promql}: {body}")
-    return cast(list[dict[str, Any]], body["data"]["result"])
+    return _list_of_dicts(body.get("data", {}).get("result"), f"query {promql!r}")
 
 
 def sink(sink_url: str) -> list[dict[str, Any]]:
-    return cast(list[dict[str, Any]], _get_json(f"{sink_url}/notifications"))
+    return _list_of_dicts(_get_json(f"{sink_url}/notifications"), f"{sink_url}/notifications")
+
+
+def _list_of_dicts(value: Any, source: str) -> list[dict[str, Any]]:
+    """Checks the shape at runtime (a cast would only silence mypy), so an unexpected
+    response fails here with a clear message instead of later with a KeyError."""
+    if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+        raise RuntimeError(f"{source}: expected a JSON list of objects, got {value!r:.200}")
+    return value
 
 
 def wait(check: Callable[[], bool], timeout: float, every: float = 5.0) -> bool:
