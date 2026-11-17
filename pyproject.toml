@@ -64,9 +64,11 @@ source = ["pulsewatch"]
 omit = ["*/pulsewatch/__main__.py"]
 
 [tool.coverage.report]
-# CI runs `pytest --cov=pulsewatch` and fails below this. Entry points that only hand
+# CI runs `pytest --cov=pulsewatch` and fails below this. 100, not 95: the package is small
+# and fully covered, so any slack would only let a new untested file through. A line that
+# genuinely can't be tested gets `# pragma: no cover` with a reason, visible in review. Entry points that only hand
 # off to uvicorn/ThreadingHTTPServer are excluded; everything else counts.
-fail_under = 95
+fail_under = 100
 show_missing = true
 exclude_also = [
     "if __name__ == .__main__.:",

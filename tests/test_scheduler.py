@@ -8,6 +8,7 @@ from pulsewatch.metrics import Metrics
 from pulsewatch.probe import ProbeResult
 from pulsewatch.scheduler import Scheduler
 from pulsewatch.storage import Storage
+from tests.helpers import wait_until
 
 
 async def test_scheduler_runs_probes_and_stops(tmp_path, mock_client, monkeypatch):
@@ -16,9 +17,8 @@ async def test_scheduler_runs_probes_and_stops(tmp_path, mock_client, monkeypatc
     storage = Storage(tmp_path / "s.db")
     sched = Scheduler([target], storage, Metrics(), "r", timedelta(hours=1), client=mock_client)
     await sched.start()
-    await asyncio.sleep(0.1)
+    await wait_until(lambda: len(storage.recent("good")) >= 1)
     await sched.stop()
-    assert len(storage.recent("good")) >= 1
     assert sched._tasks == []
     storage.close()
 
@@ -37,8 +37,8 @@ async def test_loop_survives_a_probe_error(tmp_path, mock_client, monkeypatch):
     storage = Storage(tmp_path / "s.db")
     sched = Scheduler([target], storage, Metrics(), "r", timedelta(hours=1), client=mock_client)
     await sched.start()
-    await asyncio.sleep(0.1)
-    assert calls == 1
+    await wait_until(lambda: calls == 1)
+    await asyncio.sleep(0)  # let the loop handle the error before checking it survived
     assert all(not t.done() for t in sched._tasks)  # the loop survived the error
     await sched.stop()
     assert sched._tasks == []
@@ -65,11 +65,25 @@ async def test_prune_loop_removes_old_results(tmp_path, mock_client, monkeypatch
     storage.add(old)
     target = Target(name="good", url=HttpUrl("https://good.test"), interval_seconds=60)
     sched = Scheduler([target], storage, Metrics(), "r", timedelta(hours=1), client=mock_client)
-    await sched.start()
-    await asyncio.sleep(0.1)
-    await sched.stop()
     cutoff = datetime.now(UTC) - timedelta(hours=1)
-    results = storage.recent("good")
-    assert results  # the loop's own fresh probe is still there
-    assert all(r.timestamp > cutoff for r in results)  # the 2h-old result was pruned
+
+    def pruned() -> bool:
+        results = storage.recent("good")
+        # the loop's own fresh probe is there, and the 2h-old result is gone
+        return bool(results) and all(r.timestamp > cutoff for r in results)
+
+    prunes: list[int] = []
+    real_prune = storage.prune
+
+    def counting_prune(retention: timedelta) -> int:
+        prunes.append(real_prune(retention))
+        return prunes[-1]
+
+    monkeypatch.setattr(storage, "prune", counting_prune)
+    await sched.start()
+    await wait_until(pruned)
+    # A later pass finds nothing left to remove; the loop keeps going without logging.
+    await wait_until(lambda: len(prunes) >= 2 and prunes[-1] == 0)
+    await sched.stop()
+    assert prunes[0] == 1
     storage.close()

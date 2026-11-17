@@ -565,9 +565,26 @@ jobs:
             esac
             return 1
           }
+          # `kind load docker-image` fails on pulled multi-platform images when the runner's
+          # Docker uses the containerd image store (Docker 29 runners since 2026-11-17):
+          # `ctr: content digest ...: not found`, because only this platform's layers were
+          # pulled. Export just linux/amd64 and import that archive instead; if that fails
+          # too, let the kind node's own containerd pull the image directly.
+          load() {
+            local out
+            if out=$(docker save --platform linux/amd64 -o /tmp/img.tar "$1" 2>&1 \
+                && kind load image-archive /tmp/img.tar --name pulsewatch 2>&1); then
+              rm -f /tmp/img.tar; return 0
+            fi
+            rm -f /tmp/img.tar
+            echo "::warning title=load via archive::$1: $(echo "$out" | tail -n 3 | tr '\n' ' ')"
+            out=$(docker exec pulsewatch-control-plane crictl pull "$1" 2>&1) && return 0
+            echo "::error title=load::$1: $(echo "$out" | tail -n 3 | tr '\n' ' ')"
+            return 1
+          }
           for img in $(kubectl kustomize deploy/argocd/install | sed -n 's/^ *image: //p' | sort -u | grep -v dexidp); do
             pull "$img" || { echo "::error title=pull::$img"; exit 1; }
-            kind load docker-image "$img" --name pulsewatch
+            load "$img" || exit 1
           done
       - run: make argocd-install
       - run: make argocd-bootstrap ARGOCD_REVISION="$REVISION" GITOPS_REPO="$GITOPS_REPO"

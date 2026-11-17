@@ -185,7 +185,7 @@ scripts/chaos_check.py checks used by the chaos experiments and the Prometheus r
 scripts/pin_images.py  finds images referenced by tag only, and pins them by digest; syncs image copies from docker-compose.yml
 scripts/trivy_gate.py  image-scan policy: fail on fixable critical vulnerabilities, report the rest
 scripts/netpol_check.py proves on a live cluster that the NetworkPolicies are enforced
-tests/                 180 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
+tests/                 184 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
 requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
 .github/workflows/     CI (14 jobs, section 7)
 .github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
@@ -281,7 +281,7 @@ CI (`.github/workflows/ci.yml`) runs 14 jobs on every push. Most finish in 1 to 
 |---|---|
 | `lint` | Code style (ruff, at the locked version) |
 | `typecheck` | The code, scripts and tests pass mypy in strict mode (the service code is fully annotated and ships a `py.typed` marker) |
-| `test` | 180 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt`, with a coverage gate: the run fails if less than 95% of `src/pulsewatch` is covered (currently 100%) |
+| `test` | 184 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt`, with a coverage gate: the run fails if any line or branch of `src/pulsewatch` is not covered (100%; a line that can't be tested needs an explicit `# pragma: no cover`) |
 | `pins` | Every image the repo pulls is pinned by digest (if not, the job prints the pinned refs to commit), and every copy of a `docker-compose.yml` image matches it (if not, an annotation on each stale line says to run `make sync-images`). The lockfiles install with `--require-hashes` and satisfy `pyproject.toml` (`pip check`) |
 | `docker` | The image builds and the container answers `/healthz` |
 | `image-scan` | Trivy scans the image (Debian packages and Python wheels). It fails on a **critical vulnerability that has a fix**, and reports everything else in the job summary. The SBOM (`sbom.cdx.json`, CycloneDX: every package in the image with its version) and the full report are saved as the `image-scan` build artifact. Run the same scan locally with `make scan` |
@@ -317,11 +317,12 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 
 ## 9. Lessons learned and common questions
 
-**Three real problems from building this, and what fixed them:**
+**Real problems from building this, and what fixed them:**
 
 1. **The pod that crashed for no reason.** On Kubernetes, the agent crashed at startup with "PULSEWATCH_PORT: unable to parse `tcp://10.96.x.x:8000` as an integer". Cause: Kubernetes injects Docker-link style environment variables for every Service, and a Service named `pulsewatch` produces `PULSEWATCH_PORT`, which collides with the app's own `PULSEWATCH_*` settings. Fix: `enableServiceLinks: false` on every pod, and a regression test that fails if anyone removes it.
 2. **CI went red overnight with no change in the repo.** The Terraform job failed one morning. Cause: there was no provider lockfile, so `terraform init` picked up a new `tehcyx/kind` provider release that broke `kind load`. Fix: commit `.terraform.lock.hcl`, pin the kind node image, and a CI job that fails if the lockfile is incomplete. Lesson: an unpinned dependency is a change you did not review. The same lesson later went everywhere: Python lockfiles with hashes, images by digest, actions by commit SHA, and Dependabot so that pins don't rot.
 3. **Argo CD stuck in ImagePullBackOff.** Argo CD's Redis image comes from `public.ecr.aws`, which rate-limits, and upstream sets `imagePullPolicy: Always`. Fix: pre-pull the images with retries in CI, and patch the policy to `IfNotPresent`.
+4. **CI went red overnight again, and pinning didn't help.** One morning the `argocd` job failed on every branch, including ones nobody had touched, with every image pinned by digest. `docker pull` worked; `kind load docker-image` failed with `ctr: content digest …: not found`. Cause: GitHub's runners changed overnight, and their Docker now stores images in containerd, which keeps only this machine's platform of a multi-platform image. `kind load` tried to export all platforms and found layers missing. Fix: export only `linux/amd64` (`docker save --platform`) and load that archive, with the kind node pulling the image itself as a fallback; both paths print their real error. Lessons: pinning your own inputs doesn't pin the CI machine, and a step that fails with only "exit code 1" should be made to say why before you guess.
 
 **Common questions about the design:**
 
