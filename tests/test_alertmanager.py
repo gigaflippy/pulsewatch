@@ -285,3 +285,77 @@ def test_start_rejects_partial_or_bad_credentials(run_start, env):
     res = run_start(**env)
     assert res.returncode == 1
     assert not (run_start.tmp / "args").exists()
+
+
+# --- scripts/alertmanager_mode.py ---------------------------------------------------------
+
+import importlib.util  # noqa: E402
+
+_spec = importlib.util.spec_from_file_location(
+    "alertmanager_mode", ROOT / "scripts" / "alertmanager_mode.py"
+)
+am_mode = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(am_mode)
+
+TG_LINE = "start.sh: Telegram receiver enabled for page and warn alerts (chat -100123)"
+SINK_LINE = "start.sh: no Telegram credentials; alerts go to the local alert sink only"
+
+
+class FakeKubectl:
+    """Each restart creates a new pod whose start.sh line comes from `starts`."""
+
+    def __init__(self, starts: list[str]):
+        self.starts = list(starts)
+        self.pods: list[str] = ["pod/alertmanager-old"]
+        self.logs = {"pod/alertmanager-old": TG_LINE}
+        self.restarts = 0
+
+    def __call__(self, args: list[str]) -> str:
+        if "restart" in args:
+            self.restarts += 1
+            pod = f"pod/alertmanager-{self.restarts}"
+            self.pods.append(pod)
+            self.logs[pod] = "ts=... msg=Starting Alertmanager\n" + self.starts.pop(0) + "\n"
+            return ""
+        if "status" in args:
+            return ""
+        if "get" in args:
+            return "\n".join(self.pods)  # kubectl sorted them oldest first
+        if "logs" in args:
+            return self.logs[args[-1]]
+        raise AssertionError(args)
+
+
+def test_mode_switch_retries_a_pod_that_saw_the_stale_secret():
+    # The CI flake: the first pod after deleting the Secret still had Telegram on.
+    kube = FakeKubectl([TG_LINE, SINK_LINE])
+    waits: list[float] = []
+    assert am_mode.switch("sink", run=kube, sleep=waits.append) == SINK_LINE
+    assert kube.restarts == 2 and waits == [3]
+
+
+def test_mode_switch_reads_the_newest_pod_not_a_terminating_one():
+    kube = FakeKubectl([SINK_LINE])
+    # The old pod (Telegram on) is still listed; only the newest pod counts.
+    assert am_mode.switch("sink", run=kube, sleep=lambda _: None) == SINK_LINE
+    assert kube.restarts == 1
+
+
+def test_mode_switch_gives_up_with_a_clear_error():
+    kube = FakeKubectl([SINK_LINE] * 3)
+    with pytest.raises(RuntimeError, match="did not reach mode 'telegram' after 3 restarts"):
+        am_mode.switch("telegram", attempts=3, run=kube, sleep=lambda _: None)
+    assert kube.restarts == 3
+
+
+def test_expected_lines_match_start_sh():
+    # If start.sh's wording changes, the helper must change with it.
+    start = START.read_text()
+    for expect in am_mode.EXPECT.values():
+        assert expect in start
+
+
+def test_make_targets_use_the_mode_helper():
+    make = MAKEFILE.read_text()
+    assert "scripts/alertmanager_mode.py telegram" in make
+    assert "scripts/alertmanager_mode.py sink" in make
