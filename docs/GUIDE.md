@@ -317,11 +317,12 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 
 ## 9. Lessons learned and common questions
 
-**Three real problems from building this, and what fixed them:**
+**Real problems from building this, and what fixed them:**
 
 1. **The pod that crashed for no reason.** On Kubernetes, the agent crashed at startup with "PULSEWATCH_PORT: unable to parse `tcp://10.96.x.x:8000` as an integer". Cause: Kubernetes injects Docker-link style environment variables for every Service, and a Service named `pulsewatch` produces `PULSEWATCH_PORT`, which collides with the app's own `PULSEWATCH_*` settings. Fix: `enableServiceLinks: false` on every pod, and a regression test that fails if anyone removes it.
 2. **CI went red overnight with no change in the repo.** The Terraform job failed one morning. Cause: there was no provider lockfile, so `terraform init` picked up a new `tehcyx/kind` provider release that broke `kind load`. Fix: commit `.terraform.lock.hcl`, pin the kind node image, and a CI job that fails if the lockfile is incomplete. Lesson: an unpinned dependency is a change you did not review. The same lesson later went everywhere: Python lockfiles with hashes, images by digest, actions by commit SHA, and Dependabot so that pins don't rot.
 3. **Argo CD stuck in ImagePullBackOff.** Argo CD's Redis image comes from `public.ecr.aws`, which rate-limits, and upstream sets `imagePullPolicy: Always`. Fix: pre-pull the images with retries in CI, and patch the policy to `IfNotPresent`.
+4. **CI went red overnight again, and pinning didn't help.** One morning the `argocd` job failed on every branch, including ones nobody had touched, with every image pinned by digest. `docker pull` worked; `kind load docker-image` failed with `ctr: content digest …: not found`. Cause: GitHub's runners changed overnight, and their Docker now stores images in containerd, which keeps only this machine's platform of a multi-platform image. `kind load` tried to export all platforms and found layers missing. Fix: export only `linux/amd64` (`docker save --platform`) and load that archive, with the kind node pulling the image itself as a fallback; both paths print their real error. Lessons: pinning your own inputs doesn't pin the CI machine, and a step that fails with only "exit code 1" should be made to say why before you guess.
 
 **Common questions about the design:**
 
