@@ -13,7 +13,11 @@ deleting the Secret can start a pod that still sees the old answer. CI hit this 
 fixes it, so the mode is checked from the new pod's start.sh line rather than assumed.
 
 Logs are read from the newest pod by creation time, not `deploy/alertmanager`, which can
-pick a pod that is still terminating during a rollout. Standard library only.
+pick a pod that is still terminating during a rollout. creationTimestamp has one-second
+resolution, but two pods can't tie: each attempt waits for a full rollout and then a backoff
+of at least 3 s before the next restart creates a pod. Even a tie would only cost an extra
+restart, since a pod from an earlier attempt is one that showed the wrong mode.
+Standard library only.
 """
 
 from __future__ import annotations

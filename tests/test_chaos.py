@@ -354,3 +354,20 @@ def test_parse_go_time():
     assert abs(cc.parse_go_time("2023-11-14T22:13:20.123456789Z") - 1700000000.123456789) < 1e-6
     with pytest.raises(ValueError):
         cc.parse_go_time("yesterday")
+
+
+def test_query_and_sink_check_the_response_shape(monkeypatch):
+    ok = [{"metric": {}, "value": [0, "1"]}]
+    responses = {
+        "http://p/api/v1/query?query=good": {"status": "success", "data": {"result": ok}},
+        "http://p/api/v1/query?query=bad": {"status": "success", "data": {"result": "oops"}},
+        "http://good-sink/notifications": [{"receiver": "page"}],
+        "http://bad-sink/notifications": {"error": "nope"},
+    }
+    monkeypatch.setattr(cc, "_get_json", lambda url: responses[url])
+    assert cc.query("http://p", "good") == ok
+    with pytest.raises(RuntimeError, match="expected a JSON list of objects"):
+        cc.query("http://p", "bad")
+    assert cc.sink("http://good-sink") == [{"receiver": "page"}]
+    with pytest.raises(RuntimeError, match="bad-sink/notifications"):
+        cc.sink("http://bad-sink")

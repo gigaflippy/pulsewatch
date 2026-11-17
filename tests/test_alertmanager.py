@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.helpers import load_script
+
 ROOT = Path(__file__).resolve().parent.parent
 AM = ROOT / "deploy" / "alertmanager"
 BASE_CONFIG = AM / "alertmanager.yml"
@@ -302,13 +304,7 @@ def test_start_rejects_partial_or_bad_credentials(run_start, env):
 
 # --- scripts/alertmanager_mode.py ---------------------------------------------------------
 
-import importlib.util  # noqa: E402
-
-_spec = importlib.util.spec_from_file_location(
-    "alertmanager_mode", ROOT / "scripts" / "alertmanager_mode.py"
-)
-am_mode = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(am_mode)
+am_mode = load_script("alertmanager_mode")
 
 TG_LINE = "start.sh: Telegram receiver enabled for page and warn alerts (chat -100123)"
 SINK_LINE = "start.sh: no Telegram credentials; alerts go to the local alert sink only"
