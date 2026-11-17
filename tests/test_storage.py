@@ -40,7 +40,7 @@ def test_stats_window_and_uptime(tmp_path):
     assert st.uptime_percent == 75.0
     assert st.latency_p50_ms == 20.0
     assert st.latency_p95_ms == 30.0
-    assert st.last.timestamp == NOW - timedelta(minutes=1)
+    assert st.last is not None and st.last.timestamp == NOW - timedelta(minutes=1)
 
 
 def test_stats_empty(tmp_path):

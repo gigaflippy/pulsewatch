@@ -126,7 +126,9 @@ def make_handler(inbox: Inbox) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def make_server(host: str = "0.0.0.0", port: int = 9095, inbox: Inbox | None = None):
+def make_server(
+    host: str = "0.0.0.0", port: int = 9095, inbox: Inbox | None = None
+) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer((host, port), make_handler(inbox or Inbox()))
     server.daemon_threads = True
     return server

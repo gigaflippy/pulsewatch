@@ -185,9 +185,9 @@ scripts/chaos_check.py checks used by the chaos experiments and the Prometheus r
 scripts/pin_images.py  finds images referenced by tag only, and pins them by digest; syncs image copies from docker-compose.yml
 scripts/trivy_gate.py  image-scan policy: fail on fixable critical vulnerabilities, report the rest
 scripts/netpol_check.py proves on a live cluster that the NetworkPolicies are enforced
-tests/                 170 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
+tests/                 180 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
 requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
-.github/workflows/     CI (13 jobs, section 7)
+.github/workflows/     CI (14 jobs, section 7)
 .github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
 Makefile               every command you type: kind-up, argocd-up, chaos-*, alerts-*
 docker-compose.yml     the quickest way to run everything
@@ -275,12 +275,13 @@ Take a screenshot of Grafana while the partition is active. It is the best pictu
 
 ## 7. What CI proves on every change
 
-CI (`.github/workflows/ci.yml`) runs 13 jobs on every push. Most finish in 1 to 3 minutes. `chaos` takes about 20.
+CI (`.github/workflows/ci.yml`) runs 14 jobs on every push. Most finish in 1 to 3 minutes. `chaos` takes about 20.
 
 | Job | What it proves |
 |---|---|
 | `lint` | Code style (ruff, at the locked version) |
-| `test` | 163 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt` |
+| `typecheck` | The code, scripts and tests pass mypy in strict mode (the service code is fully annotated and ships a `py.typed` marker) |
+| `test` | 180 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt`, with a coverage gate: the run fails if less than 95% of `src/pulsewatch` is covered (currently 100%) |
 | `pins` | Every image the repo pulls is pinned by digest (if not, the job prints the pinned refs to commit), and every copy of a `docker-compose.yml` image matches it (if not, an annotation on each stale line says to run `make sync-images`). The lockfiles install with `--require-hashes` and satisfy `pyproject.toml` (`pip check`) |
 | `docker` | The image builds and the container answers `/healthz` |
 | `image-scan` | Trivy scans the image (Debian packages and Python wheels). It fails on a **critical vulnerability that has a fix**, and reports everything else in the job summary. The SBOM (`sbom.cdx.json`, CycloneDX: every package in the image with its version) and the full report are saved as the `image-scan` build artifact. Run the same scan locally with `make scan` |

@@ -305,7 +305,8 @@ targets.yaml ─► Scheduler ──(one asyncio loop per target, jittered start
 ```bash
 pip install -e '.[dev]'
 ruff check . && ruff format --check .
-pytest
+mypy                          # strict; scope and settings in pyproject.toml
+pytest                        # add --cov=pulsewatch for the coverage report CI gates on
 ```
 
 To get exactly what CI and the image use, install from the hash-locked files instead:
@@ -346,7 +347,7 @@ Nothing else flows: an agent can't reach Prometheus, Grafana, Alertmanager or an
 
 kind's default CNI (kindnet) enforces NetworkPolicy, and CI proves it: the `kind` and `kind-multi-region` jobs run `make netpol-check` (`scripts/netpol_check.py`), which opens real connections from inside the pods. Forbidden paths must time out or be refused, the agent must still reach the internet, and a temporary allow rule must open one forbidden path and close it again when deleted, so "blocked" can't just mean "the network is broken". `tests/test_networkpolicy.py` checks the whole connection matrix statically as well.
 
-CI (GitHub Actions) runs lint, tests on Python 3.11 to 3.13, a Docker build with a smoke test, an image vulnerability scan with an SBOM, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
+CI (GitHub Actions) runs lint, strict type checking (mypy), tests on Python 3.11 to 3.13 with a 95% coverage gate, a Docker build with a smoke test, an image vulnerability scan with an SBOM, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
 
 ## How this was built
 
@@ -387,7 +388,7 @@ Nightly runs take these in order, one per night. A run skips ahead if an item is
 2. ~~**Image scanning:** Trivy scan in CI that fails on fixable critical vulnerabilities, plus an SBOM (list of everything in the image) saved as a build artifact.~~ ✅
 3. ~~**NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.~~ ✅
 4. ~~**Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.~~ ✅
-5. **Type checking and coverage:** mypy and a test-coverage report in CI.
+5. ~~**Type checking and coverage:** mypy and a test-coverage report in CI.~~ ✅
 6. **Watching the watcher:** an always-firing Watchdog alert, and the alert sink reports when the heartbeat stops (Alertmanager or Prometheus down).
 7. **Release pipeline:** on a `v*` tag, CI builds the image and creates a GitHub release with the SBOM. On the same tag the image goes to `ghcr.io/gigaflippy/pulsewatch` (version tags only, D-005).
 

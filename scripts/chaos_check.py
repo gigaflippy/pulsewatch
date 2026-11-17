@@ -38,7 +38,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 LABEL_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)=(.*)$")
 WINDOW_RE = re.compile(r"^\d+[smh]$")
@@ -162,11 +162,11 @@ def query(prometheus: str, promql: str, at: float | None = None) -> list[dict[st
     body = _get_json(url)
     if body.get("status") != "success":
         raise RuntimeError(f"query failed: {promql}: {body}")
-    return body["data"]["result"]
+    return cast(list[dict[str, Any]], body["data"]["result"])
 
 
 def sink(sink_url: str) -> list[dict[str, Any]]:
-    return _get_json(f"{sink_url}/notifications")
+    return cast(list[dict[str, Any]], _get_json(f"{sink_url}/notifications"))
 
 
 def wait(check: Callable[[], bool], timeout: float, every: float = 5.0) -> bool:

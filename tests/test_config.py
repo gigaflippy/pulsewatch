@@ -1,5 +1,5 @@
 import pytest
-from pydantic import ValidationError
+from pydantic import HttpUrl, ValidationError
 
 from pulsewatch.config import Target, TargetsFile, load_targets
 
@@ -44,5 +44,5 @@ def test_invalid_targets(bad):
 
 
 def test_slo_objective_default_and_override():
-    assert Target(name="a", url="https://a.test").slo_objective == 0.995
-    assert Target(name="a", url="https://a.test", slo_objective=0.99).slo_objective == 0.99
+    assert Target(name="a", url=HttpUrl("https://a.test")).slo_objective == 0.995
+    assert Target(name="a", url=HttpUrl("https://a.test"), slo_objective=0.99).slo_objective == 0.99

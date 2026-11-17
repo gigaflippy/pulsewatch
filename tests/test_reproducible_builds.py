@@ -3,23 +3,20 @@ SHA-pinned actions, and Dependabot to keep every pin current."""
 
 from __future__ import annotations
 
-import importlib.util
 import re
-import sys
 import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
 
+from tests.helpers import group, load_script
+
 ROOT = Path(__file__).resolve().parent.parent
 LOCKS = ("requirements.txt", "requirements-build.txt", "requirements-dev.txt")
 DIGEST = "@sha256:" + "a" * 64
 
-_spec = importlib.util.spec_from_file_location("pin_images", ROOT / "scripts" / "pin_images.py")
-pin_images = importlib.util.module_from_spec(_spec)
-sys.modules["pin_images"] = pin_images  # dataclasses look the module up
-_spec.loader.exec_module(pin_images)
+pin_images = load_script("pin_images")
 
 
 def _norm(name: str) -> str:
@@ -32,7 +29,7 @@ def _pins(lockfile: str) -> dict[str, str]:
 
 
 def _requirement_names(reqs: list[str]) -> set[str]:
-    return {_norm(re.match(r"[A-Za-z0-9_.-]+", r).group(0)) for r in reqs}
+    return {_norm(group(r"^[A-Za-z0-9_.-]+", r, 0)) for r in reqs}
 
 
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text())

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 import urllib.error
 import urllib.request
+from http.server import ThreadingHTTPServer
+from typing import Any
 
 import pytest
 
-from pulsewatch.alertsink import Inbox, make_server, summarize
+from pulsewatch.alertsink import Inbox, make_server, run, summarize
 
 PAYLOAD = {
     "receiver": "page",
@@ -33,7 +36,7 @@ def sink():
     server.server_close()
 
 
-def _request(url: str, method: str = "GET", body: bytes | None = None) -> tuple[int, object]:
+def _request(url: str, method: str = "GET", body: bytes | None = None) -> tuple[int, Any]:
     req = urllib.request.Request(url, data=body, method=method)
     if body is not None:
         req.add_header("Content-Type", "application/json")
@@ -101,3 +104,39 @@ def test_summarize_one_line_per_alert():
         "api is down from every region"
     )
     assert summarize("warn", {}) == []
+
+
+def test_delete_unknown_path_is_404(sink):
+    url, _ = sink
+    assert _request(f"{url}/nope", "DELETE")[0] == 404
+
+
+def test_rejects_empty_body(sink):
+    url, inbox = sink
+    assert _request(f"{url}/page", "POST", b"")[0] == 400
+    assert inbox.list() == []
+
+
+def test_rejects_unparseable_content_length(sink):
+    url, inbox = sink
+    host, _, port = url.removeprefix("http://").partition(":")
+    conn = http.client.HTTPConnection(host, int(port), timeout=5)
+    try:
+        conn.putrequest("POST", "/page")
+        conn.putheader("Content-Length", "banana")
+        conn.endheaders()
+        assert conn.getresponse().status == 400
+    finally:
+        conn.close()
+    assert inbox.list() == []
+
+
+def test_run_serves_until_interrupted(monkeypatch):
+    monkeypatch.setenv("ALERTSINK_HOST", "127.0.0.1")
+    monkeypatch.setenv("ALERTSINK_PORT", "0")  # any free port
+
+    def interrupt(self: ThreadingHTTPServer) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ThreadingHTTPServer, "serve_forever", interrupt)
+    run()  # reads the env, serves, and closes the socket on Ctrl-C

@@ -24,6 +24,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
 BLOCKING = {"CRITICAL"}
@@ -48,7 +49,7 @@ class Finding:
         return self.severity in BLOCKING and self.fixable
 
 
-def load(report: dict) -> list[Finding]:
+def load(report: dict[str, Any]) -> list[Finding]:
     """Every vulnerability in a Trivy JSON report (schema v2), one entry per package hit."""
     findings = []
     for result in report.get("Results") or []:

@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from fastapi.routing import APIRoute
 
 from pulsewatch.api import create_app
 from pulsewatch.config import Settings, load_targets
@@ -72,7 +73,7 @@ def test_pulsewatch_container_matches_app_settings(tmp_path):
         Settings(db_path=tmp_path / "x.db", scheduler_enabled=False),
         targets=load_targets(BASE / "targets.yaml"),
     )
-    routes = {r.path for r in app.routes}
+    routes = {r.path for r in app.routes if isinstance(r, APIRoute)}
     for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
         assert c[probe]["httpGet"]["path"] in routes
 
@@ -220,8 +221,10 @@ def test_prometheus_rbac_is_read_only():
 
 @pytest.mark.skipif(_kustomize() is None, reason="no kustomize/kubectl")
 def test_multi_region_overlay():
+    kustomize = _kustomize()
+    assert kustomize is not None  # skipif above
     out = subprocess.run(
-        [*_kustomize(), str(MULTI)], check=True, capture_output=True, text=True
+        [*kustomize, str(MULTI)], check=True, capture_output=True, text=True
     ).stdout
     docs = [d for d in yaml.safe_load_all(out) if d]
     agents = [

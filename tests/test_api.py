@@ -64,3 +64,12 @@ def test_metrics_before_any_probe(client):
 
 def test_status_window_validation(client):
     assert client.get("/status?window=10").status_code == 422
+
+
+def test_create_app_loads_targets_file_and_starts_scheduler(tmp_path, mock_client):
+    targets_file = tmp_path / "targets.yaml"
+    targets_file.write_text("targets:\n  - name: good\n    url: https://good.test\n")
+    settings = Settings(db_path=tmp_path / "api.db", targets_file=targets_file, region="eu-test")
+    app = create_app(settings, client=mock_client)  # scheduler_enabled defaults to true
+    with TestClient(app) as c:
+        assert [t["name"] for t in c.get("/targets").json()] == ["good"]
