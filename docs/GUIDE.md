@@ -28,7 +28,7 @@ On a fixed interval (every 30 seconds by default) it sends an HTTP request to ea
 - a Grafana **dashboard**,
 - **alerts** that go to an inbox and, if you switch it on, to your phone through Telegram.
 
-The Python code is small (about 650 lines, including the alert inbox). The value of the project is everything around it: the same service runs in Docker Compose, in Kubernetes, in several simulated **regions** at once, created by Terraform and kept in sync by Argo CD. CI tests all of it on every pull request, on a real cluster. This is the work a DevOps or SRE team does every day, at a size one person can understand fully.
+The Python code is small (about 800 lines, including the alert inbox and its dead man's switch). The value of the project is everything around it: the same service runs in Docker Compose, in Kubernetes, in several simulated **regions** at once, created by Terraform and kept in sync by Argo CD. CI tests all of it on every pull request, on a real cluster. This is the work a DevOps or SRE team does every day, at a size one person can understand fully.
 
 Everything runs on your own machine. There is no cloud account, no registry and no cost.
 
@@ -69,7 +69,7 @@ Five components, each doing one job:
 | **Pulsewatch agent** | Probes targets, stores results in SQLite, serves the API and `/metrics` | `src/pulsewatch/` |
 | **Prometheus** | Collects metrics from every agent, computes uptime, latency and SLO numbers, decides which alerts fire | `deploy/prometheus/` |
 | **Alertmanager** | Decides who gets told about each alert, and how often | `deploy/alertmanager/` |
-| **Alert sink** | A tiny inbox that receives every notification, so alerting can be tested without any account | `src/pulsewatch/alertsink.py` |
+| **Alert sink** | A tiny inbox that receives every notification, so alerting can be tested without any account. It also watches the `Watchdog` heartbeat (dead man's switch) | `src/pulsewatch/alertsink.py` |
 | **Grafana** | Shows all of it as a dashboard | `deploy/grafana/` |
 
 ---
@@ -106,6 +106,7 @@ sequenceDiagram
 6. **Decide.** Prometheus evaluates `deploy/prometheus/rules.yml` every 15 seconds. If the rule condition stays true for long enough (the `for:` time), the alert fires.
 7. **Route.** Alertmanager receives the alert and follows `deploy/alertmanager/alertmanager.yml`: `severity=page` goes to the `page` receiver and `severity=warn` to `warn`. It groups by target, so one broken target gives one message, and it holds back alerts that only repeat what a bigger alert already said (inhibition).
 8. **Deliver.** Every receiver delivers to the alert sink. If you created a Telegram bot token on your machine, `page` and `warn` also go to Telegram.
+9. **Heartbeat.** One rule, `Watchdog`, fires all the time. Alertmanager sends it to the sink's `heartbeat` receiver every minute. The sink only remembers when it last arrived; if that is too long ago, the alerting path itself is broken (section 4.2).
 
 ---
 
@@ -130,7 +131,19 @@ Consensus has a blind spot. A dead agent does not report "down", it reports **no
 - `ProbeRegionMissing` (warn): a region that reported in the last hour has stopped.
 - `ProbeAgentsAbsent` (page): no agent reports at all, so alerting is blind.
 
-A third, `AlertmanagerNotificationsFailing`, catches a broken delivery path, for example a revoked Telegram token. One gap is left: if Alertmanager itself is down, nothing can deliver any alert. Closing that needs a "dead man's switch", a heartbeat sent to a service outside the stack, which a local-only project does not have.
+A third, `AlertmanagerNotificationsFailing`, catches a broken delivery path, for example a revoked Telegram token.
+
+That still leaves the alerting machinery itself. If Alertmanager is down, nothing delivers any alert, including the alert that says Alertmanager is down. If Prometheus is down, no rule is evaluated at all. Neither can report its own death, so the check is turned around: a **dead man's switch**. Something sends "still alive" all the time, and the alarm is the *silence*.
+
+- `Watchdog` (in `rules.yml`) is `vector(1)`: always firing, with `severity: none`.
+- Alertmanager routes it first, to the `heartbeat` receiver, and resends it every minute (`repeat_interval: 1m`). It never pages and never goes to Telegram.
+- The alert sink records the time of each heartbeat instead of storing it (one a minute would push real alerts out of the inbox). `GET /heartbeat` shows `waiting`, `ok` or `missing`.
+- **Alertmanager down:** heartbeats stop. After `ALERTSINK_HEARTBEAT_TIMEOUT` (300s, a few missed heartbeats) the sink logs an error and files a firing `HeartbeatMissing` notification under receiver `deadman`; a resolved one follows when heartbeats return.
+- **Prometheus down:** Alertmanager keeps the last `Watchdog` until it expires (about 4 minutes) and then sends it as *resolved*. The sink treats a resolved `Watchdog` as "Prometheus stopped" right away.
+
+The CI `kind` job proves both: it stops Alertmanager and waits for `HeartbeatMissing`, starts it and waits for the resolve, then does the same with Prometheus.
+
+The honest limit: the switch lives in the same stack. The sink has no egress (NetworkPolicy), so its alarm stays in its own log and inbox and can't reach your phone, and if the whole machine or cluster dies, the sink dies with it. Production points the same `Watchdog` route at an external heartbeat service (for example Healthchecks.io or PagerDuty's dead man's snitch), which pages when the pings stop. That needs an account, so this project stops here (section 8).
 
 ### 4.3 SLOs and error budgets
 
@@ -185,7 +198,7 @@ scripts/chaos_check.py checks used by the chaos experiments and the Prometheus r
 scripts/pin_images.py  finds images referenced by tag only, and pins them by digest; syncs image copies from docker-compose.yml
 scripts/trivy_gate.py  image-scan policy: fail on fixable critical vulnerabilities, report the rest
 scripts/netpol_check.py proves on a live cluster that the NetworkPolicies are enforced
-tests/                 180 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
+tests/                 196 tests: code, configs, manifests, alerting, Terraform, Argo CD, pins, image scan, NetworkPolicy
 requirements*.txt      hash-locked dependencies: runtime, build backend, dev (make lock)
 .github/workflows/     CI (14 jobs, section 7)
 .github/dependabot.yml weekly update PRs for every pin (pip, images, actions, Terraform)
@@ -281,13 +294,13 @@ CI (`.github/workflows/ci.yml`) runs 14 jobs on every push. Most finish in 1 to 
 |---|---|
 | `lint` | Code style (ruff, at the locked version) |
 | `typecheck` | The code, scripts and tests pass mypy in strict mode (the service code is fully annotated and ships a `py.typed` marker) |
-| `test` | 180 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt`, with a coverage gate: the run fails if less than 95% of `src/pulsewatch` is covered (currently 100%) |
+| `test` | 196 unit and config tests on Python 3.11, 3.12 and 3.13, installed from the hash-locked `requirements-dev.txt`, with a coverage gate: the run fails if any line or branch of `src/pulsewatch` is not covered (100%; a line that can't be tested needs an explicit `# pragma: no cover`) |
 | `pins` | Every image the repo pulls is pinned by digest (if not, the job prints the pinned refs to commit), and every copy of a `docker-compose.yml` image matches it (if not, an annotation on each stale line says to run `make sync-images`). The lockfiles install with `--require-hashes` and satisfy `pyproject.toml` (`pip check`) |
 | `docker` | The image builds and the container answers `/healthz` |
 | `image-scan` | Trivy scans the image (Debian packages and Python wheels). It fails on a **critical vulnerability that has a fix**, and reports everything else in the job summary. The SBOM (`sbom.cdx.json`, CycloneDX: every package in the image with its version) and the full report are saved as the `image-scan` build artifact. Run the same scan locally with `make scan` |
-| `stack` | The full compose stack runs. Alert rules pass their unit tests (`promtool test rules`). Routing goes to the right receiver (`amtool`). A target that is always down produces `TargetDown`, and it arrives in the `page` inbox |
+| `stack` | The full compose stack runs. Alert rules pass their unit tests (`promtool test rules`). Routing goes to the right receiver (`amtool`). A target that is always down produces `TargetDown`, and it arrives in the `page` inbox. The `Watchdog` heartbeat reaches the sink |
 | `k8s-manifests` | Every overlay renders and is valid Kubernetes (kubeconform, strict) |
-| `kind` | One region on a real kind cluster: API, scrape, dashboard, results survive a pod restart, the SLO history survives a Prometheus restart (once a newly started Prometheus answers, the same samples are there for the same moment as before), alert routing, Telegram on/off with a fake token. `make netpol-check`: forbidden connections are blocked from inside the pods, and a temporary allow rule opens one and closes it again (proof that the CNI enforces NetworkPolicy) |
+| `kind` | One region on a real kind cluster: API, scrape, dashboard, results survive a pod restart, the SLO history survives a Prometheus restart (once a newly started Prometheus answers, the same samples are there for the same moment as before), alert routing, Telegram on/off with a fake token, and the dead man's switch: with Alertmanager stopped, then Prometheus, the sink reports `HeartbeatMissing`, and the heartbeat returns when each comes back. `make netpol-check`: forbidden connections are blocked from inside the pods, and a temporary allow rule opens one and closes it again (proof that the CNI enforces NetworkPolicy) |
 | `kind-multi-region` | Two regions: Prometheus discovers both and sees two distinct `region` labels across namespaces. `make netpol-check`: the agents can't reach each other or the monitoring stack |
 | `chaos` | All three chaos experiments: the right alert fires, reaches the right receiver, and the wrong alerts stay quiet |
 | `argocd` | Argo CD deploys the commit under test, all apps reach Synced/Healthy, and a deleted Deployment comes back by itself |
@@ -305,7 +318,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 - **The regions are simulated.** "eu-sim" and "us-sim" run on the same laptop, so they show the design (discovery, labels, consensus) and not real geographic diversity. Real regions are the same manifests on clusters in different places, with Prometheus federation or remote-write on top.
 - **SQLite allows one writer.** Each region therefore runs exactly one agent (`replicas: 1`, `strategy: Recreate`). You scale out by adding regions, not replicas. `storage.py` is the place to swap in Postgres.
 - **Prometheus keeps its data on one local volume.** The TSDB lives on a 2Gi PersistentVolumeClaim (`prometheus-data`), so a pod restart keeps the 7-day SLO history; CI restarts Prometheus and checks that it does. On kind the volume is a directory on the node (the `local-path` provisioner), so deleting the cluster still deletes the history, and a fresh cluster starts with a short history in which a short failure counts for a lot (`ErrorBudgetBurnSlow` can warn early). `--storage.tsdb.retention.size=1536MB` keeps it below the volume size. Production would use replicated storage, or remote-write to long-term storage (Thanos, Mimir), and run two Prometheus replicas.
-- **Nothing watches Alertmanager from outside.** If Alertmanager is down, no alert can reach you (section 4.2).
+- **The dead man's switch is inside the stack.** The alert sink notices when Alertmanager or Prometheus stops, but it can only log it and file it in its own inbox: it has no route to your phone, and it goes down with the machine. Production sends the `Watchdog` heartbeat to an external service that pages when the pings stop (section 4.2).
 - **Images are scanned when they are built, not afterwards.** A CVE published next week is only caught by the next CI run (Dependabot's weekly PRs trigger one). Production would also rescan the images that are deployed, on a schedule, or let the registry do it. Critical vulnerabilities with no fix yet pass the gate on purpose; they show up in the job summary.
 - **NetworkPolicies are by address and port, not by name.** The agent may reach any public address on any port (a target can be anywhere), and Prometheus reaches the Kubernetes API by port on private ranges, because the API server's address differs per cluster. Policies can't say "only api.telegram.org"; production would add an egress proxy or a CNI with DNS-aware policies (Cilium, Calico Enterprise). Traffic from a pod to its own node is outside NetworkPolicy, so on single-node kind every pod can still open a connection to the API server and the kubelet. Only Prometheus has an API token, and it can only read pods.
 - **No authentication anywhere.** It is a local stack. Compose publishes every port on `127.0.0.1` only, and in Kubernetes you reach things through `kubectl port-forward`. Grafana's `admin/admin` is a local default.
@@ -317,11 +330,12 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 
 ## 9. Lessons learned and common questions
 
-**Three real problems from building this, and what fixed them:**
+**Real problems from building this, and what fixed them:**
 
 1. **The pod that crashed for no reason.** On Kubernetes, the agent crashed at startup with "PULSEWATCH_PORT: unable to parse `tcp://10.96.x.x:8000` as an integer". Cause: Kubernetes injects Docker-link style environment variables for every Service, and a Service named `pulsewatch` produces `PULSEWATCH_PORT`, which collides with the app's own `PULSEWATCH_*` settings. Fix: `enableServiceLinks: false` on every pod, and a regression test that fails if anyone removes it.
 2. **CI went red overnight with no change in the repo.** The Terraform job failed one morning. Cause: there was no provider lockfile, so `terraform init` picked up a new `tehcyx/kind` provider release that broke `kind load`. Fix: commit `.terraform.lock.hcl`, pin the kind node image, and a CI job that fails if the lockfile is incomplete. Lesson: an unpinned dependency is a change you did not review. The same lesson later went everywhere: Python lockfiles with hashes, images by digest, actions by commit SHA, and Dependabot so that pins don't rot.
 3. **Argo CD stuck in ImagePullBackOff.** Argo CD's Redis image comes from `public.ecr.aws`, which rate-limits, and upstream sets `imagePullPolicy: Always`. Fix: pre-pull the images with retries in CI, and patch the policy to `IfNotPresent`.
+4. **CI went red overnight again, and pinning didn't help.** One morning the `argocd` job failed on every branch, including ones nobody had touched, with every image pinned by digest. `docker pull` worked; `kind load docker-image` failed with `ctr: content digest …: not found`. Cause: GitHub's runners changed overnight, and their Docker now stores images in containerd, which keeps only this machine's platform of a multi-platform image. `kind load` tried to export all platforms and found layers missing. Fix: export only `linux/amd64` (`docker save --platform`) and load that archive, with the kind node pulling the image itself as a fallback; both paths print their real error. Lessons: pinning your own inputs doesn't pin the CI machine, and a step that fails with only "exit code 1" should be made to say why before you guess.
 
 **Common questions about the design:**
 
@@ -348,6 +362,7 @@ These are deliberate trade-offs for a local, zero-cost project. Each one says wh
 | **Scrape** | Prometheus fetching `/metrics` from an agent |
 | **Recording rule** | A Prometheus query saved as a new series, for example `pulsewatch:target_up` |
 | **Alert rule** | A query that fires an alert when it stays true for the `for:` time |
+| **Dead man's switch** | An alarm that goes off when an "I'm alive" signal stops, for parts that can't report their own failure (here: the `Watchdog` heartbeat) |
 | **Severity** | `page` (wake someone up) or `warn` (look at it during the day) |
 | **Receiver** | Where Alertmanager sends a notification: `page`, `warn`, `default` |
 | **Inhibition** | Alertmanager holding back an alert because a bigger one already covers it |

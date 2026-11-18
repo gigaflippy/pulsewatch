@@ -300,3 +300,20 @@ tests:
       - eval_time: 15m
         alertname: ProbeRegionMissing
         exp_alerts: []
+
+  - name: Watchdog always fires, with no input at all
+    interval: 15s
+    input_series:
+      - series: 'pulsewatch_up{target="api", region="eu"}'
+        values: '1x4'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels: { severity: none }
+            exp_annotations: { summary: "Heartbeat of the alerting path; always firing while Prometheus and Alertmanager work" }
+      - eval_time: 10m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels: { severity: none }
+            exp_annotations: { summary: "Heartbeat of the alerting path; always firing while Prometheus and Alertmanager work" }

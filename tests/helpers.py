@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import re
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 
@@ -28,3 +31,12 @@ def group(pattern: str, text: str, n: int = 1, flags: int = 0) -> str:
     value = m.group(n)
     assert value is not None, f"group {n} of {pattern!r} did not participate in the match"
     return value
+
+
+async def wait_until(condition: Callable[[], bool], timeout: float = 5.0) -> None:
+    """Poll until condition() is true. Replaces fixed sleeps, which flake on slow CI runners
+    (too short) or waste time (too long)."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, f"condition not met within {timeout}s"
+        await asyncio.sleep(0.01)

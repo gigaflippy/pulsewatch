@@ -2,6 +2,7 @@
 # image). Every receiver delivers here, so routing is visible and testable with no account:
 #   kubectl -n pulsewatch port-forward svc/alert-sink 9095:9095
 #   curl localhost:9095/notifications
+#   curl localhost:9095/heartbeat        # dead man's switch for Alertmanager and Prometheus
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -36,6 +37,10 @@ spec:
           env:
             - name: PYTHONDONTWRITEBYTECODE
               value: "1"
+            # Dead man's switch: HeartbeatMissing after this long without a Watchdog
+            # notification (Alertmanager resends it every minute). GET /heartbeat shows it.
+            - name: ALERTSINK_HEARTBEAT_TIMEOUT
+              value: "300"
           ports:
             - name: http
               containerPort: 9095

@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.helpers import load_script
+
 ROOT = Path(__file__).resolve().parent.parent
 AM = ROOT / "deploy" / "alertmanager"
 BASE_CONFIG = AM / "alertmanager.yml"
@@ -76,12 +78,61 @@ def test_telegram_token_only_from_file_placeholder():
         assert not re.search(r"\d{6,}:[A-Za-z0-9_-]{30,}", path.read_text()), path
 
 
-def test_every_severity_has_a_route():
+def _severity_routes() -> dict[str, str]:
     routes = _yaml(BASE_CONFIG)["route"]["routes"]
-    routed = {_matcher_value(r["matchers"], "severity"): r["receiver"] for r in routes}
-    severities = {r["labels"]["severity"] for r in _alert_rules()}
+    return {
+        _matcher_value(r["matchers"], "severity"): r["receiver"]
+        for r in routes
+        if any(m.startswith("severity=") for m in r["matchers"])
+    }
+
+
+def test_every_severity_has_a_route():
+    routed = _severity_routes()
+    severities = {r["labels"]["severity"] for r in _alert_rules() if r["alert"] != "Watchdog"}
     assert severities <= set(routed), f"unrouted severities: {severities - set(routed)}"
     assert routed["page"] == "page" and routed["warn"] == "warn"
+
+
+def _seconds(duration: str) -> int:
+    value, unit = int(duration[:-1]), duration[-1]
+    return value * {"s": 1, "m": 60, "h": 3600}[unit]
+
+
+def test_watchdog_is_the_heartbeat_and_never_pages():
+    """Watchdog always fires and goes only to the sink's heartbeat receiver, often enough
+    that the sink's timeout never trips while everything works."""
+    [watchdog] = [r for r in _alert_rules() if r["alert"] == "Watchdog"]
+    assert watchdog["expr"] == "vector(1)"
+    assert "for" not in watchdog, "a heartbeat must fire from the first evaluation"
+    assert watchdog["labels"] == {"severity": "none"}
+    assert "none" not in _severity_routes()
+
+    cfg = _yaml(BASE_CONFIG)
+    route = cfg["route"]["routes"][0]  # first, so no other route can catch it
+    assert route["matchers"] == ['alertname="Watchdog"']
+    assert route["receiver"] == "heartbeat"
+    assert "continue" not in route
+    assert _seconds(route["group_wait"]) == 0
+    assert _seconds(route["group_interval"]) < _seconds(route["repeat_interval"])
+
+    # Worst case between two heartbeats: repeat_interval plus one group_interval tick.
+    gap = _seconds(route["repeat_interval"]) + _seconds(route["group_interval"])
+    env = {
+        e["name"]: e["value"]
+        for e in _k8s("Deployment", "alert-sink")["spec"]["template"]["spec"]["containers"][0][
+            "env"
+        ]
+    }
+    timeout = float(env["ALERTSINK_HEARTBEAT_TIMEOUT"])
+    compose_env = _yaml(COMPOSE)["services"]["alert-sink"]["environment"]
+    assert float(compose_env["ALERTSINK_HEARTBEAT_TIMEOUT"]) == timeout
+    assert timeout >= 3 * gap, "allow a couple of missed heartbeats before HeartbeatMissing"
+
+    # Nothing inhibits the heartbeat, and it never reaches Telegram (base == telegram config
+    # minus telegram_configs, checked above, and only page/warn carry telegram_configs).
+    for rule in cfg["inhibit_rules"]:
+        assert "Watchdog" not in str(rule["target_matchers"])
 
 
 def test_routes_reference_defined_receivers():
@@ -302,13 +353,7 @@ def test_start_rejects_partial_or_bad_credentials(run_start, env):
 
 # --- scripts/alertmanager_mode.py ---------------------------------------------------------
 
-import importlib.util  # noqa: E402
-
-_spec = importlib.util.spec_from_file_location(
-    "alertmanager_mode", ROOT / "scripts" / "alertmanager_mode.py"
-)
-am_mode = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(am_mode)
+am_mode = load_script("alertmanager_mode")
 
 TG_LINE = "start.sh: Telegram receiver enabled for page and warn alerts (chat -100123)"
 SINK_LINE = "start.sh: no Telegram credentials; alerts go to the local alert sink only"

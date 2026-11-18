@@ -49,6 +49,9 @@ services:
   alert-sink:
     build: .
     entrypoint: ["pulsewatch-alertsink"]
+    environment:
+      # Dead man's switch: GET http://localhost:9095/heartbeat
+      ALERTSINK_HEARTBEAT_TIMEOUT: "300"
     ports:
       - "127.0.0.1:9095:9095"
     healthcheck:

@@ -116,7 +116,8 @@ Every target has an availability objective (`slo_objective`, default **99.5%**) 
 Prometheus sends alerts to **Alertmanager** (`deploy/alertmanager/`, same files for compose and Kubernetes), which routes them by severity:
 
 ```
-Prometheus rules ──► Alertmanager ──┬─ severity=page ─► receiver "page" (group_wait 10s, repeat 1h)
+Prometheus rules ──► Alertmanager ──┬─ Watchdog ──────► receiver "heartbeat" (every minute, never paged)
+                                    ├─ severity=page ─► receiver "page" (group_wait 10s, repeat 1h)
                                     ├─ severity=warn ─► receiver "warn" (group_wait 30s, repeat 12h)
                                     └─ anything else ─► receiver "default"
    each receiver ─► alert sink (always, no account needed)
@@ -126,7 +127,8 @@ Prometheus rules ──► Alertmanager ──┬─ severity=page ─► receiv
 - **Grouping:** by `alertname` and `target`. One notification per broken target, and the regions of one target are batched into it.
 - **Inhibition:** while `TargetDown` fires for a target (down from every region, paged), `TargetDownInSomeRegions`, `TargetSlow` and `ErrorBudgetBurnSlow` for the same target are held back. `ErrorBudgetBurnFast` holds back `ErrorBudgetBurnSlow` too, and `ProbeAgentsAbsent` holds back every `ProbeRegionMissing`. One page, not several messages about the same outage.
 - **Alert sink:** `pulsewatch-alertsink` is a tiny webhook inbox from the Pulsewatch image (standard library only). It logs one line per alert and serves `GET /notifications?receiver=page`. It makes routing visible, and testable, without any credential.
-- **Delivery is watched:** Prometheus scrapes Alertmanager, and `AlertmanagerNotificationsFailing` warns when a receiver keeps failing. A revoked token doesn't go unnoticed until the next real outage. If Alertmanager itself is down, nothing can notify you: that needs an outside dead man's switch (a heartbeat alert to an external service), which this local stack does not have.
+- **Delivery is watched:** Prometheus scrapes Alertmanager, and `AlertmanagerNotificationsFailing` warns when a receiver keeps failing. A revoked token doesn't go unnoticed until the next real outage.
+- **The watcher is watched (dead man's switch):** `Watchdog` always fires, and Alertmanager sends it to the sink's `heartbeat` receiver every minute. If it stops for `ALERTSINK_HEARTBEAT_TIMEOUT` (300s), or Alertmanager reports it resolved because Prometheus stopped sending it, the sink logs an error and files a firing `HeartbeatMissing` under receiver `deadman` (`make alerts-inbox`, `curl localhost:9095/heartbeat`). CI stops Alertmanager, then Prometheus, on kind and checks that the sink notices each time. The limit: the sink runs in the same stack and has no way out (no egress), so it can't reach your phone, and losing the whole machine stops it too. That needs an external heartbeat service, which this zero-cost local stack does not use.
 
 ### Telegram
 
@@ -347,7 +349,7 @@ Nothing else flows: an agent can't reach Prometheus, Grafana, Alertmanager or an
 
 kind's default CNI (kindnet) enforces NetworkPolicy, and CI proves it: the `kind` and `kind-multi-region` jobs run `make netpol-check` (`scripts/netpol_check.py`), which opens real connections from inside the pods. Forbidden paths must time out or be refused, the agent must still reach the internet, and a temporary allow rule must open one forbidden path and close it again when deleted, so "blocked" can't just mean "the network is broken". `tests/test_networkpolicy.py` checks the whole connection matrix statically as well.
 
-CI (GitHub Actions) runs lint, strict type checking (mypy), tests on Python 3.11 to 3.13 with a 95% coverage gate, a Docker build with a smoke test, an image vulnerability scan with an SBOM, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
+CI (GitHub Actions) runs lint, strict type checking (mypy), tests on Python 3.11 to 3.13 with a 100% coverage gate, a Docker build with a smoke test, an image vulnerability scan with an SBOM, and a full-stack job that runs `promtool check config`, brings up the compose stack, and checks that Prometheus is scraping Pulsewatch and Alertmanager, Grafana serves the provisioned dashboard and a healthy datasource, and an alert travels from a failing probe to the alert sink (see [Alert routing](#alert-routing)).
 
 ## How this was built
 
@@ -389,7 +391,7 @@ Nightly runs take these in order, one per night. A run skips ahead if an item is
 3. ~~**NetworkPolicy:** default-deny in every Pulsewatch namespace, with explicit allow rules. CI proves a blocked connection is really blocked.~~ ✅
 4. ~~**Persistent Prometheus:** Prometheus on a PersistentVolumeClaim instead of emptyDir. CI proves SLO data survives a pod restart.~~ ✅
 5. ~~**Type checking and coverage:** mypy and a test-coverage report in CI.~~ ✅
-6. **Watching the watcher:** an always-firing Watchdog alert, and the alert sink reports when the heartbeat stops (Alertmanager or Prometheus down).
+6. ~~**Watching the watcher:** an always-firing Watchdog alert, and the alert sink reports when the heartbeat stops (Alertmanager or Prometheus down).~~ ✅
 7. **Release pipeline:** on a `v*` tag, CI builds the image and creates a GitHub release with the SBOM. On the same tag the image goes to `ghcr.io/gigaflippy/pulsewatch` (version tags only, D-005).
 
 Later: k6 load test of the API, a Helm chart, TCP/DNS/TLS-expiry probes, logs with Loki. Major-version upgrades that Dependabot proposed, each in its own reviewed PR with CI proof: Prometheus v2 → v3 (#23; v3 changed config and UI defaults) and Grafana 11 → 13 (#24; two majors, dashboard and provisioning changes).

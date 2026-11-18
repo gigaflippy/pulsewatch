@@ -14,6 +14,7 @@ Standard library only: runs on a bare CI runner or a laptop next to `make k8s-fo
     chaos_check.py wait-inhibited ProbeRegionMissing region=eu-sim
     chaos_check.py history-save 'pulsewatch:slo_error_ratio:5m' /tmp/slo.json
     chaos_check.py history-check /tmp/slo.json      # after restarting Prometheus
+    chaos_check.py wait-heartbeat missing           # the sink's dead man's switch tripped
 
 history-save waits until the series has a few samples, then records how many each series
 has in the last --window at that moment. history-check first waits until it is talking to
@@ -38,7 +39,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
 LABEL_RE = re.compile(r"^([a-zA-Z_][a-zA-Z0-9_]*)=(.*)$")
 WINDOW_RE = re.compile(r"^\d+[smh]$")
@@ -162,11 +163,29 @@ def query(prometheus: str, promql: str, at: float | None = None) -> list[dict[st
     body = _get_json(url)
     if body.get("status") != "success":
         raise RuntimeError(f"query failed: {promql}: {body}")
-    return cast(list[dict[str, Any]], body["data"]["result"])
+    return _list_of_dicts(body.get("data", {}).get("result"), f"query {promql!r}")
 
 
 def sink(sink_url: str) -> list[dict[str, Any]]:
-    return cast(list[dict[str, Any]], _get_json(f"{sink_url}/notifications"))
+    return _list_of_dicts(_get_json(f"{sink_url}/notifications"), f"{sink_url}/notifications")
+
+
+def heartbeat(sink_url: str) -> dict[str, Any]:
+    """The alert sink's dead man's switch state (GET /heartbeat)."""
+    body = _get_json(f"{sink_url}/heartbeat")
+    if not isinstance(body, dict) or not isinstance(body.get("state"), str):
+        raise RuntimeError(
+            f"{sink_url}/heartbeat: expected an object with a state, got {body!r:.200}"
+        )
+    return body
+
+
+def _list_of_dicts(value: Any, source: str) -> list[dict[str, Any]]:
+    """Checks the shape at runtime (a cast would only silence mypy), so an unexpected
+    response fails here with a clear message instead of later with a KeyError."""
+    if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+        raise RuntimeError(f"{source}: expected a JSON list of objects, got {value!r:.200}")
+    return value
 
 
 def wait(check: Callable[[], bool], timeout: float, every: float = 5.0) -> bool:
@@ -215,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--min-samples", type=int, default=3)
     s = sub.add_parser("history-check")
     s.add_argument("file")
+    s = sub.add_parser("wait-heartbeat")
+    s.add_argument("state", choices=["ok", "missing", "waiting"])
     args = p.parse_args(argv)
 
     prom = os.environ.get("PROMETHEUS_URL", "http://localhost:9090").rstrip("/")
@@ -259,6 +280,17 @@ def main(argv: list[str] | None = None) -> int:
             args.timeout,
         )
         print(f"{'inhibited' if ok else 'NOT inhibited after timeout'}: {args.alertname} {labels}")
+        return 0 if ok else 1
+    if args.cmd == "wait-heartbeat":
+        last: dict[str, Any] = {}
+
+        def check_heartbeat() -> bool:
+            last.clear()
+            last.update(heartbeat(sink_url))
+            return bool(last["state"] == args.state)
+
+        ok = wait(check_heartbeat, args.timeout)
+        print(f"{'ok' if ok else 'TIMEOUT'}: heartbeat {last or '?'} (want {args.state})")
         return 0 if ok else 1
     if args.cmd == "history-save":
         q = history_query(args.promql, args.window)

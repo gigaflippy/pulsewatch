@@ -125,6 +125,7 @@ class FakeServices:
         self.start_time = "2023-11-14T22:13:20Z"  # what /api/v1/status/runtimeinfo reports
         self.inbox: list[dict] = []
         self.am_alerts: list[dict] = []
+        self.heartbeat: object = {"state": "waiting"}
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -146,6 +147,8 @@ class FakeServices:
                     body = fake.inbox
                 elif url.path == "/api/v2/alerts":
                     body = fake.am_alerts
+                elif url.path == "/heartbeat":
+                    body = fake.heartbeat
                 else:
                     self.send_error(404)
                     return
@@ -224,6 +227,17 @@ def test_cli_wait_inhibited(fake):
         }
     )
     assert cc.main(["wait-inhibited", "ProbeRegionMissing", "region=eu-sim"]) == 0
+
+
+def test_cli_wait_heartbeat(fake, capsys):
+    assert cc.main(["--timeout", "0", "wait-heartbeat", "missing"]) == 1
+    assert "TIMEOUT" in capsys.readouterr().out
+    fake.heartbeat = {"state": "missing", "reason": "no heartbeat for 61s"}
+    assert cc.main(["wait-heartbeat", "missing"]) == 0
+    assert "no heartbeat for 61s" in capsys.readouterr().out
+    fake.heartbeat = ["not", "an", "object"]  # wrong shape: retried, then a timeout
+    assert cc.main(["--timeout", "0", "wait-heartbeat", "ok"]) == 1
+    assert "expected an object with a state" in capsys.readouterr().err
 
 
 def test_cli_keeps_waiting_through_connection_errors(monkeypatch):
@@ -354,3 +368,20 @@ def test_parse_go_time():
     assert abs(cc.parse_go_time("2023-11-14T22:13:20.123456789Z") - 1700000000.123456789) < 1e-6
     with pytest.raises(ValueError):
         cc.parse_go_time("yesterday")
+
+
+def test_query_and_sink_check_the_response_shape(monkeypatch):
+    ok = [{"metric": {}, "value": [0, "1"]}]
+    responses = {
+        "http://p/api/v1/query?query=good": {"status": "success", "data": {"result": ok}},
+        "http://p/api/v1/query?query=bad": {"status": "success", "data": {"result": "oops"}},
+        "http://good-sink/notifications": [{"receiver": "page"}],
+        "http://bad-sink/notifications": {"error": "nope"},
+    }
+    monkeypatch.setattr(cc, "_get_json", lambda url: responses[url])
+    assert cc.query("http://p", "good") == ok
+    with pytest.raises(RuntimeError, match="expected a JSON list of objects"):
+        cc.query("http://p", "bad")
+    assert cc.sink("http://good-sink") == [{"receiver": "page"}]
+    with pytest.raises(RuntimeError, match="bad-sink/notifications"):
+        cc.sink("http://bad-sink")
