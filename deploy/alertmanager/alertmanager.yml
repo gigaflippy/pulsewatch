@@ -18,6 +18,14 @@ route:
   group_interval: 5m
   repeat_interval: 4h
   routes:
+    # Watchdog always fires: it is the heartbeat of this whole path. It is resent every
+    # minute, so the alert sink can tell when it stops (dead man's switch: Alertmanager or
+    # Prometheus down). First, so no severity route can catch it; never paged.
+    - receiver: heartbeat
+      matchers: ['alertname="Watchdog"']
+      group_wait: 0s
+      group_interval: 30s
+      repeat_interval: 1m
     - receiver: page
       matchers: ['severity="page"']
       group_wait: 10s
@@ -45,6 +53,10 @@ receivers:
   - name: default
     webhook_configs:
       - url: http://alert-sink:9095/default
+        send_resolved: true
+  - name: heartbeat
+    webhook_configs:
+      - url: http://alert-sink:9095/heartbeat
         send_resolved: true
   - name: page
     webhook_configs:

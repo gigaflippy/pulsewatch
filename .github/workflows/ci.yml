@@ -184,6 +184,7 @@ jobs:
           routes --verify.receivers=warn  alertname=ErrorBudgetBurnSlow severity=warn target=api
           routes --verify.receivers=warn  alertname=ProbeRegionMissing severity=warn region=us-sim
           routes --verify.receivers=page  alertname=ProbeAgentsAbsent severity=page
+          routes --verify.receivers=heartbeat alertname=Watchdog severity=none
           routes --verify.receivers=default alertname=Unlabelled
           # The Telegram variant, rendered by start.sh exactly as at runtime (fake values).
           docker run --rm --entrypoint /bin/sh -e TELEGRAM_BOT_TOKEN=123456:ci-fake-token \
@@ -208,6 +209,8 @@ jobs:
           curl -fs localhost:3000/api/dashboards/uid/pulsewatch-overview | grep -q '"title":"Pulsewatch overview"'
           curl -fs -u admin:admin localhost:3000/api/datasources/uid/pulsewatch-prometheus/health \
             | grep -q '"status":"OK"'
+      - name: Watchdog heartbeat reaches the alert sink (dead man's switch armed)
+        run: python3 scripts/chaos_check.py --timeout 120 wait-heartbeat ok
       - name: Inhibition holds back warnings for a target that is down everywhere
         run: |
           add() { docker compose exec -T alertmanager amtool --alertmanager.url=http://localhost:9093 alert add "$@"; }
@@ -386,6 +389,32 @@ jobs:
           test "$(kubectl -n pulsewatch exec "$pod" -- sh -c 'tr "\0" "\n" < /proc/1/environ | grep -c TELEGRAM_BOT_TOKEN || true')" = 0
           make alerts-telegram-off | tee off.log
           grep -q 'alert sink only' off.log
+      - name: "Watching the watcher: the sink notices when Alertmanager or Prometheus stops"
+        env:
+          HB: python3 scripts/chaos_check.py --timeout 240
+        run: |
+          # Heartbeats arrive 60-90s apart (repeat_interval 1m on a 30s group_interval tick).
+          # 120s keeps CI short without flapping; the manifests keep 300s.
+          kubectl -n pulsewatch set env deployment/alert-sink ALERTSINK_HEARTBEAT_TIMEOUT=120
+          kubectl -n pulsewatch rollout status deployment/alert-sink --timeout=120s
+          pkill -f 'port-forward svc/alert-sink' || true
+          kubectl -n pulsewatch port-forward svc/alert-sink 9095:9095 >/dev/null 2>&1 &
+          $HB wait-heartbeat ok
+          # Alertmanager down: nothing can deliver any alert, so the heartbeat stops.
+          kubectl -n pulsewatch scale deployment/alertmanager --replicas=0
+          $HB wait-heartbeat missing
+          $HB wait-delivered deadman HeartbeatMissing
+          kubectl -n pulsewatch scale deployment/alertmanager --replicas=1
+          kubectl -n pulsewatch rollout status deployment/alertmanager --timeout=120s
+          $HB wait-heartbeat ok
+          $HB wait-delivered deadman HeartbeatMissing --status resolved
+          # Prometheus down: Alertmanager keeps the last Watchdog until it expires (about 4m),
+          # then sends it as resolved, which the sink reads as "Prometheus stopped".
+          kubectl -n pulsewatch scale deployment/prometheus --replicas=0
+          $HB --timeout 480 wait-heartbeat missing
+          kubectl -n pulsewatch scale deployment/prometheus --replicas=1
+          kubectl -n pulsewatch rollout status deployment/prometheus --timeout=180s
+          $HB wait-heartbeat ok
       - name: Diagnostics on failure
         if: failure()
         run: |
@@ -395,6 +424,7 @@ jobs:
           { kubectl version 2>&1; kubectl get networkpolicy -A 2>&1; kubectl -n kube-system get pods -o wide 2>&1; \
             kubectl -n kube-system logs -l app=kindnet --tail=40 2>&1; } | annotate "networkpolicy"
           kubectl -n pulsewatch get events --sort-by=.lastTimestamp 2>&1 | tail -40 | annotate "events"
+          { curl -fs localhost:9095/heartbeat; echo; curl -fs 'localhost:9095/notifications?receiver=deadman'; } 2>&1 | annotate "heartbeat"
           for d in pulsewatch prometheus grafana alertmanager alert-sink; do
             { kubectl -n pulsewatch get pods -l app.kubernetes.io/name=$d -o wide; \
               kubectl -n pulsewatch logs deploy/$d --tail=60 --all-containers 2>&1; \

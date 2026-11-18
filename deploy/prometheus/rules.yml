@@ -44,6 +44,15 @@ groups:
 
   - name: pulsewatch.alerts
     rules:
+      # Always firing, on purpose: proof that Prometheus evaluates rules and Alertmanager
+      # delivers. Alertmanager routes it to the alert sink's heartbeat receiver every minute;
+      # the sink raises HeartbeatMissing when it stops (src/pulsewatch/alertsink.py).
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Heartbeat of the alerting path; always firing while Prometheus and Alertmanager work"
       # A target is only paged as down when every region that probes it agrees.
       # With a single region this is the same as "down from that region".
       - alert: TargetDown
